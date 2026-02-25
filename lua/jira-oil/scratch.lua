@@ -292,7 +292,7 @@ end
 ---Compute what changed between the original issue and the parsed buffer
 ---@param data table Cache entry for this buffer
 ---@param parsed table Parsed buffer content
----@return table changes { summary_changed, assignee_changed, status_changed, epic_changed, new_summary, new_assignee, new_status, new_epic_key }
+---@return table changes
 local function compute_issue_diff(data, parsed)
   local orig = data.original or { fields = {} }
   local changes = {}
@@ -301,6 +301,11 @@ local function compute_issue_diff(data, parsed)
   local orig_summary = orig.fields and orig.fields.summary or ""
   changes.summary_changed = parsed.summary ~= orig_summary
   changes.new_summary = parsed.summary
+
+  -- Description
+  local orig_description = orig.fields and orig.fields.description or ""
+  changes.description_changed = parsed.description ~= orig_description
+  changes.new_description = parsed.description
 
   -- Assignee
   local orig_assignee = ""
@@ -324,6 +329,30 @@ local function compute_issue_diff(data, parsed)
   changes.epic_changed = new_epic_key ~= orig_epic_key
   changes.new_epic_key = new_epic_key
   changes.orig_epic_key = orig_epic_key
+
+  -- Components
+  local orig_components = {}
+  if orig.fields and orig.fields.components and type(orig.fields.components) == "table" then
+    for _, comp in ipairs(orig.fields.components) do
+      if comp and comp.name and comp.name ~= "" then
+        table.insert(orig_components, comp.name)
+      end
+    end
+  end
+  local orig_components_str = table.concat(orig_components, ", ")
+  local new_components_str = parsed.fields.components or ""
+  changes.components_changed = new_components_str ~= orig_components_str
+  changes.new_components = new_components_str
+
+  -- Type
+  local orig_type = ""
+  if orig.fields then
+    local itype = orig.fields.issuetype or orig.fields.issueType
+    if itype then orig_type = itype.name or "" end
+  end
+  local new_type = parsed.fields.type or ""
+  changes.type_changed = new_type ~= "" and new_type ~= orig_type
+  changes.new_type = new_type
 
   return changes
 end
@@ -419,15 +448,23 @@ function M.save(buf)
 
     local steps = {}
 
-    -- Step 1: Edit summary (only if changed)
-    if diff.summary_changed then
+    -- Step 1: Edit summary and/or description (combined into one `jira issue edit` call)
+    if diff.summary_changed or diff.description_changed then
       table.insert(steps, {
-        desc = "update summary",
+        desc = "update summary/description",
         fn = function(next_cb)
-          local args = { "issue", "edit", data.key, "--no-input", "-s", diff.new_summary }
+          local args = { "issue", "edit", data.key, "--no-input" }
+          if diff.summary_changed then
+            table.insert(args, "-s")
+            table.insert(args, diff.new_summary)
+          end
+          if diff.description_changed then
+            table.insert(args, "--body")
+            table.insert(args, diff.new_description)
+          end
           cli.exec(args, function(_, stderr, code)
             if code ~= 0 then
-              vim.notify("Failed to update summary for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              vim.notify("Failed to update " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
               next_cb(true)
             else
               next_cb(false)
@@ -508,6 +545,56 @@ function M.save(buf)
       end
     end
 
+    -- Step 5: Components change (only if changed)
+    if diff.components_changed then
+      table.insert(steps, {
+        desc = "update components",
+        fn = function(next_cb)
+          -- jira issue edit supports --component/-C to set components
+          local args = { "issue", "edit", data.key, "--no-input" }
+          if diff.new_components == "" then
+            -- Clear components by passing empty component flag
+            table.insert(args, "--component")
+            table.insert(args, "")
+          else
+            for comp in string.gmatch(diff.new_components, "[^,]+") do
+              comp = vim.trim(comp)
+              if comp ~= "" then
+                table.insert(args, "--component")
+                table.insert(args, comp)
+              end
+            end
+          end
+          cli.exec(args, function(_, stderr, code)
+            if code ~= 0 then
+              vim.notify("Failed to update components for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              next_cb(true)
+            else
+              next_cb(false)
+            end
+          end)
+        end,
+      })
+    end
+
+    -- Step 6: Type change (only if changed)
+    if diff.type_changed then
+      table.insert(steps, {
+        desc = "update type",
+        fn = function(next_cb)
+          -- jira issue edit supports --type/-t to change issue type
+          cli.exec({ "issue", "edit", data.key, "--no-input", "-t", diff.new_type }, function(_, stderr, code)
+            if code ~= 0 then
+              vim.notify("Failed to update type for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              next_cb(true)
+            else
+              next_cb(false)
+            end
+          end)
+        end,
+      })
+    end
+
     if #steps == 0 then
       vim.notify("No changes to apply.", vim.log.levels.INFO)
       if vim.api.nvim_buf_is_valid(buf) then
@@ -520,9 +607,46 @@ function M.save(buf)
       if has_errors then
         vim.notify("Some updates failed for " .. data.key .. ". Check messages above.", vim.log.levels.WARN)
       else
-        -- Update cached epic key on success
+        -- Update cached original to reflect saved state so re-saving
+        -- without changes correctly reports "no changes to apply"
+        local orig = data.original
+        if not orig.fields then orig.fields = {} end
+        if diff.summary_changed then
+          orig.fields.summary = diff.new_summary
+        end
+        if diff.description_changed then
+          orig.fields.description = diff.new_description
+        end
+        if diff.assignee_changed then
+          if diff.new_assignee == "Unassigned" then
+            orig.fields.assignee = nil
+          else
+            orig.fields.assignee = { displayName = diff.new_assignee }
+          end
+        end
+        if diff.status_changed then
+          orig.fields.status = { name = diff.new_status }
+        end
         if diff.epic_changed then
           data.epic_key = diff.new_epic_key
+        end
+        if diff.components_changed then
+          local comps = {}
+          for comp in string.gmatch(diff.new_components, "[^,]+") do
+            comp = vim.trim(comp)
+            if comp ~= "" then
+              table.insert(comps, { name = comp })
+            end
+          end
+          orig.fields.components = comps
+        end
+        if diff.type_changed then
+          local itype = orig.fields.issuetype or orig.fields.issueType
+          if itype then
+            itype.name = diff.new_type
+          else
+            orig.fields.issuetype = { name = diff.new_type }
+          end
         end
         vim.notify("Issue " .. data.key .. " updated successfully!", vim.log.levels.INFO)
       end

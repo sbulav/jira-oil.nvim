@@ -140,6 +140,32 @@ require("jira-oil").setup({
 })
 ```
 
+## Architecture Summary
+                    ┌─────────────┐
+                    │   init.lua   │  Entry: setup(), BufReadCmd/BufWriteCmd autocommands
+                    │  :JiraOil    │  User command
+                    └──────┬──────┘
+                           │
+              ┌────────────┼────────────┐
+              ▼            ▼            ▼
+        ┌──────────┐ ┌──────────┐ ┌───────────┐
+        │ view.lua │ │scratch.lua│ │config.lua │
+        │ List buf │ │Issue buf  │ │ Options   │
+        └────┬─────┘ └────┬─────┘ └───────────┘
+             │            │
+     ┌───────┤       ┌────┤
+     ▼       ▼       ▼    ▼
+┌─────────┐┌────────┐┌─────────┐
+│parser.lua│mutator │ cli.lua │  External: jira CLI
+│Format/  ││.lua    ││ Exec,   │
+│Parse    ││Diff &  ││ CSV,    │
+│lines    ││Execute ││ Fetch   │
+└─────────┘└────────┘└────┬────┘
+                          │
+                    ┌─────┴─────┐
+                    │ util.lua  │  pad_right(), trim()
+                    └───────────┘
+
 ## Troubleshooting
 
 ### "Invalid URI" or missing commands
