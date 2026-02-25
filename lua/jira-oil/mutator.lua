@@ -20,8 +20,8 @@ function M.compute_diff(buf)
   local mutations = {}
 
   local current_section = data.target == "backlog" and "backlog" or "sprint"
-  local function is_separator(line)
-    return data.target == "all" and line == view.separator
+  local function is_header(line)
+    return line == view.header_sprint or line == view.header_backlog
   end
 
   -- Build a row -> key mapping from extmarks (survives line moves)
@@ -32,8 +32,13 @@ function M.compute_diff(buf)
 
   for lnum, line in ipairs(lines) do
     if line:match("%S") then
-      if is_separator(line) then
-        current_section = "backlog"
+      if is_header(line) then
+        -- Switch section based on which header we hit
+        if line == view.header_backlog then
+          current_section = "backlog"
+        elseif line == view.header_sprint then
+          current_section = "sprint"
+        end
       else
         local parsed = parser.parse_line(line)
         if parsed then

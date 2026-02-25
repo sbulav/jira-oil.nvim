@@ -8,11 +8,14 @@ local M = {}
 
 M.cache = {}
 
---- Sentinel text written into the buffer for the section separator.
---- The mutator checks for this exact string to detect section boundaries.
-M.separator = "----- backlog -----"
+--- Sentinel lines written into the buffer for section headers.
+--- The mutator treats any line matching one of these as a non-issue boundary.
+M.header_sprint  = "----- sprint -----"
+M.header_backlog = "----- backlog -----"
+--- Legacy alias – the mutator used to check for M.separator.
+M.separator = M.header_backlog
 
---- Namespace for highlights, separator overlay, and general extmarks.
+--- Namespace for highlights, header overlays, and general extmarks.
 M.ns = vim.api.nvim_create_namespace("JiraOilList")
 
 --- Dedicated namespace for inline virtual-text key extmarks so they can
@@ -43,7 +46,7 @@ local function define_highlights()
   hl("JiraOilStatusDone",       { link = "DiagnosticOk" })
   hl("JiraOilStatusBlocked",    { link = "DiagnosticError" })
 
-  -- Section separator
+  -- Section headers
   hl("JiraOilSectionRule",  { link = "WinSeparator" })
   hl("JiraOilSectionLabel", { link = "Title" })
   hl("JiraOilSectionCount", { link = "Comment" })
@@ -62,50 +65,62 @@ vim.api.nvim_create_autocmd("ColorScheme", {
 })
 
 -- ---------------------------------------------------------------------------
--- Rendering helpers
+-- Helpers
 -- ---------------------------------------------------------------------------
 
---- Build the styled separator overlay chunks for a section boundary.
----@param label string  e.g. "Backlog"
+--- Is this line a section header sentinel?
+---@param line string
+---@return boolean
+local function is_header(line)
+  return line == M.header_sprint or line == M.header_backlog
+end
+
+--- Build a column-aligned section header overlay.
+--- The output accounts for the key virtual-text width so headers line up
+--- with data rows (which have inline virt_text shifting them right).
+---@param label string  e.g. "Sprint", "Backlog"
 ---@param count number|nil
----@return table[] chunks  for virt_text
-local function build_separator_chunks(label, count)
+---@return table[] chunks  for virt_text overlay
+local function build_header_chunks(label, count)
+  local columns = config.options.view.columns
+  local key_width = config.options.view.key_width or 12
   local sections = config.options.view.sections or {}
   local show_count = sections.show_count ~= false
+
   local chunks = {}
 
-  table.insert(chunks, { "── ", "JiraOilSectionRule" })
-  table.insert(chunks, { label, "JiraOilSectionLabel" })
+  -- Section label occupies the key-column area
+  local section_text = label
   if show_count and count then
-    table.insert(chunks, { " (" .. count .. ")", "JiraOilSectionCount" })
+    section_text = section_text .. " (" .. count .. ")"
   end
-  table.insert(chunks, { " ", "JiraOilSectionRule" })
+  table.insert(chunks, { util.pad_right(section_text, key_width) .. " ", "JiraOilSectionLabel" })
 
-  -- Fill remaining width with rule characters.  We compute a generous
-  -- width; if the window is narrower the virtual text will simply be
-  -- clipped by Neovim.
-  local text_width = 0
-  for _, c in ipairs(chunks) do
-    text_width = text_width + vim.api.nvim_strwidth(c[1])
-  end
-  local fill = math.max(0, 80 - text_width)
-  if fill > 0 then
-    table.insert(chunks, { string.rep("─", fill), "JiraOilSectionRule" })
+  -- Column names aligned to the editable column widths
+  local sep = " \u{2502} "
+  for i, col in ipairs(columns) do
+    if i > 1 then
+      table.insert(chunks, { sep, "JiraOilSectionRule" })
+    end
+    local header = col.name:upper()
+    if col.width then
+      header = util.pad_right(header, col.width)
+    end
+    table.insert(chunks, { header, "JiraOilSectionRule" })
   end
 
   return chunks
 end
 
 --- Apply all decorations to a rendered buffer: column highlights, key
---- virtual text, separator overlay, and winbar.
+--- virtual text, header overlays, and winbar.
 ---@param buf number
 ---@param lines string[]           buffer text lines
 ---@param issue_keys (string|nil)[] parallel array: issue key per line, nil for non-issue lines
----@param sep_lnum number|nil       1-indexed line number of the separator (if present)
 ---@param sprint_count number
 ---@param backlog_count number
 ---@param target string
-local function apply_decorations(buf, lines, issue_keys, sep_lnum, sprint_count, backlog_count, target)
+local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, target)
   vim.api.nvim_buf_clear_namespace(buf, M.ns, 0, -1)
   vim.api.nvim_buf_clear_namespace(buf, M.ns_keys, 0, -1)
 
@@ -113,46 +128,49 @@ local function apply_decorations(buf, lines, issue_keys, sep_lnum, sprint_count,
   local col_hl = config.options.view.column_highlights or {}
   local status_hl = config.options.view.status_highlights or {}
   local key_width = config.options.view.key_width or 12
+  local sections_cfg = config.options.view.sections or {}
 
-  local sep = " │ "
+  local sep = " \u{2502} "
   local sep_byte_len = #sep
-
-  -- We store extmark_id -> issue_key so the mutator can resolve identity.
-  local mark_keys = {}
 
   for lnum, line in ipairs(lines) do
     local row = lnum - 1 -- 0-indexed
 
-    -- Key virtual text (inline, read-only)
-    local key = issue_keys[lnum]
-    if key then
-      local padded = util.pad_right(key, key_width) .. " "
-      local mark_id = vim.api.nvim_buf_set_extmark(buf, M.ns_keys, row, 0, {
-        virt_text = { { padded, "JiraOilKey" } },
-        virt_text_pos = "inline",
-        right_gravity = false,
-      })
-      mark_keys[mark_id] = key
-    elseif line ~= M.separator then
-      -- New issue line (no key yet) — add empty padding so columns align
-      local padded = string.rep(" ", key_width + 1)
-      vim.api.nvim_buf_set_extmark(buf, M.ns_keys, row, 0, {
-        virt_text = { { padded, "Normal" } },
-        virt_text_pos = "inline",
-        right_gravity = false,
-      })
-    end
-
-    -- Separator overlay
-    if line == M.separator then
-      local sections = config.options.view.sections or {}
-      local label = sections.backlog_label or "Backlog"
-      local chunks = build_separator_chunks(label, backlog_count)
+    if is_header(line) then
+      -- Section header overlay – column-aligned with a label in the key area
+      local label, count
+      if line == M.header_sprint then
+        label = sections_cfg.sprint_label or "Sprint"
+        count = sprint_count
+      else
+        label = sections_cfg.backlog_label or "Backlog"
+        count = backlog_count
+      end
+      local chunks = build_header_chunks(label, count)
       vim.api.nvim_buf_set_extmark(buf, M.ns, row, 0, {
         virt_text = chunks,
         virt_text_pos = "overlay",
       })
     else
+      -- Key virtual text (inline, read-only)
+      local key = issue_keys[lnum]
+      if key then
+        local padded = util.pad_right(key, key_width) .. " "
+        vim.api.nvim_buf_set_extmark(buf, M.ns_keys, row, 0, {
+          virt_text = { { padded, "JiraOilKey" } },
+          virt_text_pos = "inline",
+          right_gravity = false,
+        })
+      else
+        -- New issue line (no key yet) – empty padding keeps columns aligned
+        local padded = string.rep(" ", key_width + 1)
+        vim.api.nvim_buf_set_extmark(buf, M.ns_keys, row, 0, {
+          virt_text = { { padded, "Normal" } },
+          virt_text_pos = "inline",
+          right_gravity = false,
+        })
+      end
+
       -- Column highlights on the inline buffer text
       local parts = vim.split(line, sep, { plain = true })
       local start_col = 0
@@ -177,23 +195,6 @@ local function apply_decorations(buf, lines, issue_keys, sep_lnum, sprint_count,
     end
   end
 
-  -- Store the key mapping in the cache
-  local data = M.cache[buf]
-  if data then
-    data.mark_keys = mark_keys
-  end
-
-  -- Sprint section header (placed as a virtual line above the first line)
-  if target == "all" and sprint_count > 0 then
-    local sections = config.options.view.sections or {}
-    local label = sections.sprint_label or "Sprint"
-    local chunks = build_separator_chunks(label, sprint_count)
-    vim.api.nvim_buf_set_extmark(buf, M.ns, 0, 0, {
-      virt_lines = { chunks },
-      virt_lines_above = true,
-    })
-  end
-
   -- Winbar
   if config.options.view.show_winbar ~= false then
     local project = config.options.defaults.project
@@ -206,15 +207,72 @@ local function apply_decorations(buf, lines, issue_keys, sep_lnum, sprint_count,
     elseif target == "backlog" then
       target_label = "Backlog"
     end
-    local wb = ""
-    if project ~= "" then
-      wb = wb .. "%#JiraOilWinbarProject# " .. project .. "%* "
-      wb = wb .. "%#JiraOilWinbarSep#│%* "
+    local columns = config.options.view.columns
+    local count_text = total .. " issue" .. (total == 1 and "" or "s")
+
+    local function gutter_width(win)
+      local width = 0
+      local wo = vim.wo[win]
+
+      -- Number/relative number column
+      if wo.number or wo.relativenumber then
+        width = width + wo.numberwidth
+      end
+
+      -- Sign column (typically 2 cells when enabled)
+      local sc = wo.signcolumn
+      if sc ~= "no" then
+        local n = sc:match("yes:(%d+)") or sc:match("auto:(%d+)")
+        if n then
+          width = width + tonumber(n)
+        elseif sc == "yes" or sc == "auto" or sc == "number" then
+          width = width + 2
+        end
+      end
+
+      -- Fold column
+      local fc = wo.foldcolumn
+      local fcn = tostring(fc):match("(%d+)")
+      if fcn then
+        width = width + tonumber(fcn)
+      end
+
+      return width
     end
-    wb = wb .. "%#JiraOilWinbar#" .. target_label .. "%* "
-    wb = wb .. "%#JiraOilWinbarSep#│%* "
-    wb = wb .. "%#JiraOilWinbarCount#" .. total .. " issue" .. (total == 1 and "" or "s") .. "%*"
+
+    local sep_txt = " \u{2502} "
     for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+      local pad = string.rep(" ", gutter_width(win))
+
+      -- Build a column-aligned winbar so values sit above list columns:
+      -- key area -> project, first editable col -> section, last col -> count.
+      local wb = "%#JiraOilWinbar#" .. pad .. "%*"
+
+      local project_text = project ~= "" and project or "JIRA"
+      wb = wb .. "%#JiraOilWinbarProject#" .. util.pad_right(project_text, key_width) .. " %*"
+
+      local parts = {}
+      for i, col in ipairs(columns) do
+        local v = ""
+        if i == 1 then
+          v = target_label
+        elseif i == #columns then
+          v = count_text
+        end
+        if col.width then
+          v = util.pad_right(v, col.width)
+        end
+        parts[i] = v
+      end
+
+      for i, part in ipairs(parts) do
+        if i > 1 then
+          wb = wb .. "%#JiraOilWinbarSep#" .. sep_txt .. "%*"
+        end
+        local hl = (i == #parts) and "JiraOilWinbarCount" or "JiraOilWinbar"
+        wb = wb .. "%#" .. hl .. "#" .. part .. "%*"
+      end
+
       vim.wo[win].winbar = wb
     end
   end
@@ -229,13 +287,16 @@ end
 ---@param row number 0-indexed line number
 ---@return string|nil key
 function M.get_key_at_line(buf, row)
-  local data = M.cache[buf]
-  if not data or not data.mark_keys then return nil end
-
-  local marks = vim.api.nvim_buf_get_extmarks(buf, M.ns_keys, { row, 0 }, { row, 0 }, {})
+  local marks = vim.api.nvim_buf_get_extmarks(buf, M.ns_keys, { row, 0 }, { row, 0 }, { details = true })
   for _, mark in ipairs(marks) do
-    local key = data.mark_keys[mark[1]]
-    if key then return key end
+    local details = mark[4] or {}
+    local vt = details.virt_text
+    if vt and vt[1] and vt[1][1] then
+      local key = util.trim(vt[1][1])
+      if key ~= "" then
+        return key
+      end
+    end
   end
   return nil
 end
@@ -245,15 +306,16 @@ end
 ---@param buf number
 ---@return table<number, string> row_to_key
 function M.get_all_line_keys(buf)
-  local data = M.cache[buf]
-  if not data or not data.mark_keys then return {} end
-
   local row_to_key = {}
-  local marks = vim.api.nvim_buf_get_extmarks(buf, M.ns_keys, 0, -1, {})
+  local marks = vim.api.nvim_buf_get_extmarks(buf, M.ns_keys, 0, -1, { details = true })
   for _, mark in ipairs(marks) do
-    local key = data.mark_keys[mark[1]]
-    if key then
-      row_to_key[mark[2]] = key  -- mark[2] is the 0-indexed row
+    local details = mark[4] or {}
+    local vt = details.virt_text
+    if vt and vt[1] and vt[1][1] then
+      local key = util.trim(vt[1][1])
+      if key ~= "" then
+        row_to_key[mark[2]] = key  -- mark[2] is the 0-indexed row
+      end
     end
   end
   return row_to_key
@@ -290,7 +352,7 @@ function M.open(buf, uri)
     for _, issue in ipairs(issues) do
       local line = parser.format_line(issue)
       table.insert(lines, line)
-      table.insert(issue_keys, issue.key or nil)
+      issue_keys[#lines] = issue.key or nil
       local parsed = parser.parse_line(line)
       if parsed then
         parsed.key = issue.key or ""
@@ -309,7 +371,6 @@ function M.open(buf, uri)
       original = structured,
       original_lines = vim.deepcopy(lines),
       original_keys = vim.deepcopy(issue_keys),
-      mark_keys = {},  -- populated by apply_decorations
     }
 
     vim.bo[buf].modifiable = true
@@ -317,7 +378,7 @@ function M.open(buf, uri)
     vim.bo[buf].modified = false
     vim.bo[buf].undolevels = old_undolevels
 
-    apply_decorations(buf, lines, issue_keys, nil, sprint_count, backlog_count, target)
+    apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, target)
     actions.setup(buf)
   end
 
@@ -328,11 +389,15 @@ function M.open(buf, uri)
         local issue_keys = {}
         local structured = {}
 
+        -- Sprint header
+        table.insert(lines, M.header_sprint)
+        issue_keys[#lines] = nil
+
         render_section(sprint_issues, "sprint", lines, issue_keys, structured)
 
-        -- Separator line
-        table.insert(lines, M.separator)
-        table.insert(issue_keys, nil) -- no key for the separator
+        -- Backlog header
+        table.insert(lines, M.header_backlog)
+        issue_keys[#lines] = nil
 
         render_section(backlog_issues, "backlog", lines, issue_keys, structured)
 
@@ -345,7 +410,14 @@ function M.open(buf, uri)
       local lines = {}
       local issue_keys = {}
       local structured = {}
+
+      -- Single-section header
+      local hdr = target == "sprint" and M.header_sprint or M.header_backlog
+      table.insert(lines, hdr)
+      issue_keys[#lines] = nil
+
       render_section(issues, target, lines, issue_keys, structured)
+
       local sc = target == "sprint" and #issues or 0
       local bc = target == "backlog" and #issues or 0
       finish(lines, issue_keys, structured, sc, bc)
@@ -380,13 +452,13 @@ function M.reset(buf)
   vim.bo[buf].modified = false
   vim.bo[buf].undolevels = old_undolevels
 
-  -- Recount sections for the separator overlay
+  -- Recount sections for the header overlays
   local sprint_count, backlog_count = 0, 0
   local in_backlog = false
   for i, line in ipairs(lines) do
-    if line == M.separator then
+    if line == M.header_backlog then
       in_backlog = true
-    elseif issue_keys[i] then
+    elseif not is_header(line) and issue_keys[i] then
       if in_backlog then
         backlog_count = backlog_count + 1
       else
@@ -395,7 +467,7 @@ function M.reset(buf)
     end
   end
 
-  apply_decorations(buf, lines, issue_keys, nil, sprint_count, backlog_count, data.target)
+  apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, data.target)
 end
 
 return M
