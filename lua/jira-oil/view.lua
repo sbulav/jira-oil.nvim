@@ -2,11 +2,75 @@ local cli = require("jira-oil.cli")
 local parser = require("jira-oil.parser")
 local config = require("jira-oil.config")
 local actions = require("jira-oil.actions")
+local util = require("jira-oil.util")
 
 local M = {}
 
 M.cache = {}
 M.separator = "----- backlog -----"
+M.ns = vim.api.nvim_create_namespace("JiraOilList")
+
+local function ensure_highlights()
+  if M._highlights_set then
+    return
+  end
+  M._highlights_set = true
+
+  vim.api.nvim_set_hl(0, "JiraOilKey", { link = "Identifier", default = true })
+  vim.api.nvim_set_hl(0, "JiraOilStatus", { link = "DiagnosticInfo", default = true })
+  vim.api.nvim_set_hl(0, "JiraOilAssignee", { link = "Comment", default = true })
+  vim.api.nvim_set_hl(0, "JiraOilSummary", { link = "Normal", default = true })
+  vim.api.nvim_set_hl(0, "JiraOilSeparator", { link = "Comment", default = true })
+
+  vim.api.nvim_set_hl(0, "JiraOilStatusOpen", { link = "DiagnosticHint", default = true })
+  vim.api.nvim_set_hl(0, "JiraOilStatusInProgress", { link = "DiagnosticWarn", default = true })
+  vim.api.nvim_set_hl(0, "JiraOilStatusInReview", { link = "DiagnosticInfo", default = true })
+  vim.api.nvim_set_hl(0, "JiraOilStatusDone", { link = "DiagnosticOk", default = true })
+  vim.api.nvim_set_hl(0, "JiraOilStatusBlocked", { link = "DiagnosticError", default = true })
+end
+
+local function apply_highlights(buf, lines)
+  ensure_highlights()
+  vim.api.nvim_buf_clear_namespace(buf, M.ns, 0, -1)
+
+  local columns = config.options.view.columns
+  local col_hl = config.options.view.column_highlights or {}
+  local status_hl = config.options.view.status_highlights or {}
+  local sep_hl = config.options.view.separator_highlight or "JiraOilSeparator"
+
+  local sep = " │ "
+  local sep_len = #sep
+
+  for lnum, line in ipairs(lines) do
+    if line == M.separator then
+      vim.api.nvim_buf_set_extmark(buf, M.ns, lnum - 1, 0, {
+        end_col = #line,
+        hl_group = sep_hl,
+      })
+    else
+      local parts = vim.split(line, sep, { plain = true })
+      local start_col = 0
+      for idx, col in ipairs(columns) do
+        local part = parts[idx] or ""
+        local width = #part
+        local hl_group = col_hl[col.name] or "Normal"
+        if col.name == "status" then
+          local status = util.trim(part)
+          if status ~= "" and status_hl[status] then
+            hl_group = status_hl[status]
+          end
+        end
+        if width > 0 then
+          vim.api.nvim_buf_set_extmark(buf, M.ns, lnum - 1, start_col, {
+            end_col = start_col + width,
+            hl_group = hl_group,
+          })
+        end
+        start_col = start_col + width + sep_len
+      end
+    end
+  end
+end
 
 ---@param buf number
 ---@param uri string
@@ -56,6 +120,7 @@ function M.open(buf, uri)
     vim.bo[buf].modified = false
     vim.bo[buf].undolevels = old_undolevels
 
+    apply_highlights(buf, lines)
     actions.setup(buf)
   end
 
@@ -108,6 +173,7 @@ function M.reset(buf)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modified = false
   vim.bo[buf].undolevels = old_undolevels
+  apply_highlights(buf, lines)
 end
 
 return M

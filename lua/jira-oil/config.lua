@@ -34,6 +34,22 @@ local default_config = {
       { name = "summary" },
     },
     default_sort = "key",
+    column_highlights = {
+      key = "JiraOilKey",
+      status = "JiraOilStatus",
+      assignee = "JiraOilAssignee",
+      summary = "JiraOilSummary",
+    },
+    status_highlights = {
+      ["Open"] = "JiraOilStatusOpen",
+      ["To Do"] = "JiraOilStatusOpen",
+      ["In Progress"] = "JiraOilStatusInProgress",
+      ["In Review"] = "JiraOilStatusInReview",
+      ["Done"] = "JiraOilStatusDone",
+      ["Closed"] = "JiraOilStatusDone",
+      ["Blocked"] = "JiraOilStatusBlocked",
+    },
+    separator_highlight = "JiraOilSeparator",
   },
   -- Keymaps in jira-oil list buffers. Can be any value that `vim.keymap.set` accepts OR a table of
   -- keymap options with a `callback` (e.g. { callback = function() ... end, desc = "", mode = "n" })
