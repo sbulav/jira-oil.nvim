@@ -21,6 +21,9 @@ M.ns = vim.api.nvim_create_namespace("JiraOilList")
 --- Dedicated namespace for inline virtual-text key extmarks so they can
 --- be queried independently without iterating all extmarks.
 M.ns_keys = vim.api.nvim_create_namespace("JiraOilKeys")
+M.ns_copy = vim.api.nvim_create_namespace("JiraOilCopiedSource")
+
+M.last_yank = nil
 
 -- ---------------------------------------------------------------------------
 -- Highlight groups
@@ -73,6 +76,16 @@ vim.api.nvim_create_autocmd("ColorScheme", {
 ---@return boolean
 local function is_header(line)
   return line == M.header_sprint or line == M.header_backlog
+end
+
+---@param project string|nil
+---@return string
+local function newtask_placeholder(project)
+  local p = util.trim(project or "")
+  if p == "" then
+    p = "PROJECT"
+  end
+  return p .. "-NEWTASK"
 end
 
 --- Build a column-aligned section header overlay.
@@ -162,10 +175,14 @@ local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_c
           right_gravity = false,
         })
       else
-        -- New issue line (no key yet) – empty padding keeps columns aligned
-        local padded = string.rep(" ", key_width + 1)
+        -- New issue line placeholder keeps alignment and marks create intent.
+        local source_key = M.get_copy_source_at_line(buf, row)
+        local source_project = util.issue_project_from_key(source_key)
+        local project = source_project or config.options.defaults.project
+        local placeholder = newtask_placeholder(project)
+        local padded = util.pad_right(placeholder, key_width) .. " "
         vim.api.nvim_buf_set_extmark(buf, M.ns_keys, row, 0, {
-          virt_text = { { padded, "Normal" } },
+          virt_text = { { padded, "JiraOilKey" } },
           virt_text_pos = "inline",
           right_gravity = false,
         })
@@ -293,7 +310,7 @@ function M.get_key_at_line(buf, row)
     local vt = details.virt_text
     if vt and vt[1] and vt[1][1] then
       local key = util.trim(vt[1][1])
-      if key ~= "" then
+      if key ~= "" and not util.is_newtask_key(key) then
         return key
       end
     end
@@ -313,12 +330,158 @@ function M.get_all_line_keys(buf)
     local vt = details.virt_text
     if vt and vt[1] and vt[1][1] then
       local key = util.trim(vt[1][1])
-      if key ~= "" then
+      if key ~= "" and not util.is_newtask_key(key) then
         row_to_key[mark[2]] = key  -- mark[2] is the 0-indexed row
       end
     end
   end
   return row_to_key
+end
+
+---@param buf number
+---@param row number
+---@param source_key string
+function M.set_copy_source_at_line(buf, row, source_key)
+  local data = M.cache[buf]
+  if not data then
+    return
+  end
+  data.copy_sources = data.copy_sources or {}
+  local id = vim.api.nvim_buf_set_extmark(buf, M.ns_copy, row, 0, {
+    right_gravity = false,
+  })
+  data.copy_sources[id] = source_key
+end
+
+---@param buf number
+---@param row number
+function M.clear_copy_source_at_line(buf, row)
+  local data = M.cache[buf]
+  if not data or not data.copy_sources then
+    return
+  end
+  local marks = vim.api.nvim_buf_get_extmarks(buf, M.ns_copy, { row, 0 }, { row, 0 }, {})
+  for _, mark in ipairs(marks) do
+    data.copy_sources[mark[1]] = nil
+    vim.api.nvim_buf_del_extmark(buf, M.ns_copy, mark[1])
+  end
+end
+
+---@param buf number
+---@param row number
+---@return string|nil
+function M.get_copy_source_at_line(buf, row)
+  local data = M.cache[buf]
+  if not data or not data.copy_sources then
+    return nil
+  end
+  local marks = vim.api.nvim_buf_get_extmarks(buf, M.ns_copy, { row, 0 }, { row, 0 }, { limit = 1 })
+  if #marks == 0 then
+    return nil
+  end
+  return data.copy_sources[marks[1][1]]
+end
+
+---@param buf number
+---@return table<number, string>
+function M.get_all_copy_sources(buf)
+  local out = {}
+  local data = M.cache[buf]
+  if not data or not data.copy_sources then
+    return out
+  end
+  local marks = vim.api.nvim_buf_get_extmarks(buf, M.ns_copy, 0, -1, {})
+  for _, mark in ipairs(marks) do
+    local source_key = data.copy_sources[mark[1]]
+    if source_key and source_key ~= "" then
+      out[mark[2]] = source_key
+    end
+  end
+  return out
+end
+
+---@param buf number
+---@param row number
+---@param key string
+function M.set_line_key(buf, row, key)
+  vim.api.nvim_buf_clear_namespace(buf, M.ns_keys, row, row + 1)
+  local key_width = config.options.view.key_width or 12
+  local padded = util.pad_right(key, key_width) .. " "
+  vim.api.nvim_buf_set_extmark(buf, M.ns_keys, row, 0, {
+    virt_text = { { padded, "JiraOilKey" } },
+    virt_text_pos = "inline",
+    right_gravity = false,
+  })
+end
+
+---@param buf number
+---@param row_to_key table<number, string>
+function M.replace_all_line_keys(buf, row_to_key)
+  vim.api.nvim_buf_clear_namespace(buf, M.ns_keys, 0, -1)
+  for row, key in pairs(row_to_key or {}) do
+    if key and key ~= "" then
+      local key_width = config.options.view.key_width or 12
+      local padded = util.pad_right(key, key_width) .. " "
+      vim.api.nvim_buf_set_extmark(buf, M.ns_keys, row, 0, {
+        virt_text = { { padded, "JiraOilKey" } },
+        virt_text_pos = "inline",
+        right_gravity = false,
+      })
+    end
+  end
+end
+
+---@param buf number
+---@param row_to_source table<number, string>
+function M.replace_all_copy_sources(buf, row_to_source)
+  local data = M.cache[buf]
+  if not data then
+    return
+  end
+  vim.api.nvim_buf_clear_namespace(buf, M.ns_copy, 0, -1)
+  data.copy_sources = {}
+  for row, source_key in pairs(row_to_source or {}) do
+    if source_key and source_key ~= "" then
+      local id = vim.api.nvim_buf_set_extmark(buf, M.ns_copy, row, 0, {
+        right_gravity = false,
+      })
+      data.copy_sources[id] = source_key
+    end
+  end
+end
+
+---@param buf number
+function M.decorate_current(buf)
+  local data = M.cache[buf]
+  if not data or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local row_to_key = M.get_all_line_keys(buf)
+  local issue_keys = {}
+  local sprint_count, backlog_count = 0, 0
+  local in_backlog = data.target == "backlog"
+
+  for i, line in ipairs(lines) do
+    local row = i - 1
+    if line == M.header_backlog then
+      in_backlog = true
+    elseif line == M.header_sprint then
+      in_backlog = false
+    else
+      issue_keys[i] = row_to_key[row]
+      if line:match("%S") then
+        if in_backlog then
+          backlog_count = backlog_count + 1
+        else
+          sprint_count = sprint_count + 1
+        end
+      end
+    end
+  end
+
+  apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, data.target)
 end
 
 ---@param buf number
@@ -371,6 +534,7 @@ function M.open(buf, uri)
       original = structured,
       original_lines = vim.deepcopy(lines),
       original_keys = vim.deepcopy(issue_keys),
+      copy_sources = {},
     }
 
     vim.bo[buf].modifiable = true
@@ -444,6 +608,8 @@ function M.reset(buf)
 
   local lines = vim.deepcopy(data.original_lines)
   local issue_keys = vim.deepcopy(data.original_keys or {})
+  data.copy_sources = {}
+  vim.api.nvim_buf_clear_namespace(buf, M.ns_copy, 0, -1)
 
   local old_undolevels = vim.bo[buf].undolevels
   vim.bo[buf].undolevels = -1

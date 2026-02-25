@@ -97,6 +97,8 @@ local default_config = {
     ["<C-c>"] = { "actions.create", mode = "n" },
     ["gB"] = { "actions.open_in_browser", mode = "n" },
     ["<C-y>"] = { "actions.yank_issue_key", mode = { "n", "v" } },
+    ["p"] = { "actions.paste_after", mode = "n" },
+    ["P"] = { "actions.paste_before", mode = "n" },
     ["<M-r>"] = { "actions.refresh", mode = "n" },
     ["<C-q>"] = { "actions.close", mode = "n" },
     ["<C-s>"] = { "actions.save", mode = "n" },

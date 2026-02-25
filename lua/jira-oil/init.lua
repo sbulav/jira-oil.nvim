@@ -47,6 +47,14 @@ function M.setup(opts)
     end,
   })
 
+  vim.api.nvim_create_autocmd("TextYankPost", {
+    group = group,
+    pattern = "*",
+    callback = function(args)
+      require("jira-oil.actions").on_text_yank_post(args.buf)
+    end,
+  })
+
 end
 
 ---Open a specific URI

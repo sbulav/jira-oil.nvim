@@ -1,6 +1,7 @@
 local parser = require("jira-oil.parser")
 local cli = require("jira-oil.cli")
 local config = require("jira-oil.config")
+local util = require("jira-oil.util")
 
 local M = {}
 
@@ -26,6 +27,7 @@ function M.compute_diff(buf)
 
   -- Build a row -> key mapping from extmarks (survives line moves)
   local row_to_key = view.get_all_line_keys(buf)
+  local row_to_source = view.get_all_copy_sources(buf)
 
   -- Track which keys we've already seen to handle duplicates
   local seen_keys = {}
@@ -49,6 +51,7 @@ function M.compute_diff(buf)
           if key then
             parsed.key = key
             parsed.is_new = false
+            parsed.row = lnum - 1
             -- Skip duplicate keys -- only the first occurrence counts
             if seen_keys[key] then
               vim.notify("Duplicate key " .. key .. " ignored.", vim.log.levels.WARN)
@@ -58,6 +61,8 @@ function M.compute_diff(buf)
             end
           else
             parsed.is_new = true
+            parsed.row = lnum - 1
+            parsed.source_key = row_to_source[lnum - 1]
             -- Assign defaults for new issues
             if not parsed.type or parsed.type == "" then
               parsed.type = config.options.defaults.issue_type
@@ -220,20 +225,122 @@ function M.execute_mutations(buf, mutations)
   end
 
   local function apply_mutations(sprint_id)
-    for _, m in ipairs(mutations) do
-      if m.type == "CREATE" then
-        local args = { "issue", "create", "-t", m.item.type, "-s", m.item.summary, "--no-input" }
-        local proj = config.options.defaults.project
-        if proj ~= "" then table.insert(args, "-p"); table.insert(args, proj) end
-        if m.item.assignee ~= "Unassigned" then table.insert(args, "-a"); table.insert(args, m.item.assignee) end
+    local function build_create_args(item, source_issue)
+      local fields = source_issue and source_issue.fields or {}
+      local source_project = fields and fields.project and fields.project.key or ""
+      local project = source_project
+      if project == "" then
+        local source_from_key = util.issue_project_from_key(item.source_key)
+        project = source_from_key or config.options.defaults.project
+      end
 
-        cli.exec(args, function(stdout, stderr, code)
+      local source_type = ""
+      if fields then
+        local itype = fields.issuetype or fields.issueType
+        source_type = itype and itype.name or ""
+      end
+      local issue_type = item.type ~= "" and item.type or source_type
+      if issue_type == "" then
+        issue_type = config.options.defaults.issue_type
+      end
+
+      local args = { "issue", "create", "-t", issue_type, "-s", item.summary, "--no-input" }
+
+      if project ~= "" then
+        table.insert(args, "-p")
+        table.insert(args, project)
+      end
+
+      local assignee = item.assignee
+      if assignee == "" and fields and fields.assignee then
+        assignee = fields.assignee.displayName or fields.assignee.name or ""
+      end
+      if assignee ~= "" and assignee ~= "Unassigned" then
+        table.insert(args, "-a")
+        table.insert(args, assignee)
+      end
+
+      local epic_key = ""
+      if fields and fields.parent and fields.parent.key then
+        epic_key = fields.parent.key
+      elseif fields and config.options.epic_field and config.options.epic_field ~= "" then
+        local raw = fields[config.options.epic_field]
+        if type(raw) == "string" and raw ~= "" then
+          epic_key = raw:match("([A-Z0-9]+%-%d+)") or ""
+        end
+      end
+      if epic_key ~= "" then
+        table.insert(args, "-P")
+        table.insert(args, epic_key)
+      end
+
+      local components = {}
+      if fields and type(fields.components) == "table" then
+        for _, comp in ipairs(fields.components) do
+          if comp and comp.name and comp.name ~= "" then
+            table.insert(components, comp.name)
+          end
+        end
+      end
+      for _, comp in ipairs(components) do
+        table.insert(args, "-C")
+        table.insert(args, comp)
+      end
+
+      if fields and fields.description and fields.description ~= "" then
+        table.insert(args, "--body")
+        table.insert(args, fields.description)
+      end
+
+      return args
+    end
+
+    local function after_create_success(item, stdout)
+      local key = util.extract_issue_key(stdout)
+      if key and item.row ~= nil then
+        view.set_line_key(buf, item.row, key)
+        view.clear_copy_source_at_line(buf, item.row)
+      end
+
+      local status = item.status or ""
+      if status ~= "" and status ~= "To Do" and status ~= config.options.defaults.status and key then
+        cli.exec({ "issue", "move", key, status }, function(_, stderr, code)
           if code ~= 0 then
-            vim.notify("Failed to create issue: " .. (stderr or ""), vim.log.levels.ERROR)
+            vim.notify("Failed to set status for " .. key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
             has_errors = true
           end
           check_done()
         end)
+      else
+        check_done()
+      end
+    end
+
+    for _, m in ipairs(mutations) do
+      if m.type == "CREATE" then
+        local function create_with_source(source_issue)
+          local args = build_create_args(m.item, source_issue)
+          cli.exec(args, function(stdout, stderr, code)
+            if code ~= 0 then
+              vim.notify("Failed to create issue: " .. (stderr or ""), vim.log.levels.ERROR)
+              has_errors = true
+              check_done()
+              return
+            end
+            after_create_success(m.item, stdout)
+          end)
+        end
+
+        if m.item.source_key and m.item.source_key ~= "" then
+          cli.get_issue(m.item.source_key, function(source_issue)
+            if not source_issue then
+              vim.notify("Could not load source issue " .. m.item.source_key .. ". Creating from list fields only.", vim.log.levels.WARN)
+            end
+            create_with_source(source_issue)
+          end)
+        else
+          create_with_source(nil)
+        end
       elseif m.type == "UPDATE" then
         local summary_changed = false
         local assignee_changed = false

@@ -47,4 +47,28 @@ function M.strip_icon(text)
   return stripped
 end
 
+---@param key string|nil
+---@return boolean
+function M.is_newtask_key(key)
+  return type(key) == "string" and key:match("%-NEWTASK$") ~= nil
+end
+
+---@param key string|nil
+---@return string|nil
+function M.issue_project_from_key(key)
+  if type(key) ~= "string" then
+    return nil
+  end
+  return key:match("^([A-Z0-9]+)%-%d+$")
+end
+
+---@param text string|nil
+---@return string|nil
+function M.extract_issue_key(text)
+  if type(text) ~= "string" then
+    return nil
+  end
+  return text:match("([A-Z][A-Z0-9]+%-%d+)")
+end
+
 return M

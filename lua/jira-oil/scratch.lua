@@ -6,8 +6,43 @@ local actions = require("jira-oil.actions")
 local M = {}
 
 M.cache = {}
+M.pending_prefill = nil
 M.ns = vim.api.nvim_create_namespace("JiraOilIssue")
 M.ns_anchor = vim.api.nvim_create_namespace("JiraOilIssueAnchor")
+
+local function build_issue_from_prefill(prefill, source_issue)
+  local issue = vim.deepcopy(source_issue or { fields = {} })
+  issue.fields = issue.fields or {}
+
+  local row = prefill and prefill.row_fields or {}
+  if row.summary and row.summary ~= "" then
+    issue.fields.summary = row.summary
+  end
+
+  if row.assignee and row.assignee ~= "" then
+    if row.assignee == "Unassigned" then
+      issue.fields.assignee = nil
+    else
+      issue.fields.assignee = { displayName = row.assignee }
+    end
+  end
+
+  if row.status and row.status ~= "" then
+    issue.fields.status = { name = row.status }
+  end
+
+  if row.type and row.type ~= "" then
+    issue.fields.issuetype = { name = row.type }
+    issue.fields.issueType = issue.fields.issuetype
+  end
+
+  if not issue.fields.project or not issue.fields.project.key or issue.fields.project.key == "" then
+    local source_project = util.issue_project_from_key(prefill and prefill.source_key)
+    issue.fields.project = { key = source_project or config.options.defaults.project }
+  end
+
+  return issue
+end
 
 local function define_highlights()
   vim.api.nvim_set_hl(0, "JiraOilIssueLabel", { link = "Identifier", default = true })
@@ -322,7 +357,17 @@ function M.open(buf, uri)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Loading issue " .. key .. "..." })
 
   if key == "new" then
-    render_issue(buf, key, { fields = {} }, true)
+    local prefill = M.pending_prefill
+    M.pending_prefill = nil
+    if prefill and prefill.source_key and prefill.source_key ~= "" then
+      cli.get_issue(prefill.source_key, function(source_issue)
+        local issue = build_issue_from_prefill(prefill, source_issue)
+        render_issue(buf, key, issue, true)
+      end)
+    else
+      local issue = build_issue_from_prefill(prefill or {}, nil)
+      render_issue(buf, key, issue, true)
+    end
   else
     cli.get_issue(key, function(issue)
       if issue then
@@ -332,6 +377,12 @@ function M.open(buf, uri)
       end
     end)
   end
+end
+
+---@param prefill table|nil
+function M.open_new(prefill)
+  M.pending_prefill = prefill
+  vim.cmd.edit("jira-oil://issue/new")
 end
 
 ---Parse scratch buffer into a structured issue payload.
@@ -558,7 +609,48 @@ function M.save(buf)
       if code ~= 0 then
         vim.notify("Failed to create issue: " .. (stderr or ""), vim.log.levels.ERROR)
       else
-        vim.notify("Issue created successfully!", vim.log.levels.INFO)
+        local created_key = util.extract_issue_key(stdout or "")
+        if created_key and created_key ~= "" then
+          data.key = created_key
+          data.is_new = false
+          data.epic_key = extract_epic_key(parsed.fields.epic or "")
+          if not data.original then
+            data.original = { fields = {} }
+          end
+          if not data.original.fields then
+            data.original.fields = {}
+          end
+          data.original.fields.summary = parsed.summary
+          data.original.fields.description = parsed.description
+          if parsed.fields.assignee and parsed.fields.assignee ~= "" and parsed.fields.assignee ~= "Unassigned" then
+            data.original.fields.assignee = { displayName = parsed.fields.assignee }
+          else
+            data.original.fields.assignee = nil
+          end
+          if parsed.fields.status and parsed.fields.status ~= "" then
+            data.original.fields.status = { name = parsed.fields.status }
+          end
+          if parsed.fields.type and parsed.fields.type ~= "" then
+            data.original.fields.issuetype = { name = parsed.fields.type }
+          end
+          if parsed.fields.components and parsed.fields.components ~= "" then
+            local comps = {}
+            for comp in string.gmatch(parsed.fields.components, "[^,]+") do
+              comp = vim.trim(comp)
+              if comp ~= "" then
+                table.insert(comps, { name = comp })
+              end
+            end
+            data.original.fields.components = comps
+          end
+          if parsed.fields.project and parsed.fields.project ~= "" then
+            data.original.fields.project = { key = parsed.fields.project }
+          end
+          vim.api.nvim_buf_set_name(buf, "jira-oil://issue/" .. created_key)
+          vim.notify("Issue created successfully: " .. created_key, vim.log.levels.INFO)
+        else
+          vim.notify("Issue created successfully!", vim.log.levels.INFO)
+        end
         if vim.api.nvim_buf_is_valid(buf) then
           vim.bo[buf].modified = false
         end
