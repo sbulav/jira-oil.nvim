@@ -1,10 +1,51 @@
 local config = require("jira-oil.config")
 local cli = require("jira-oil.cli")
 local util = require("jira-oil.util")
+local actions = require("jira-oil.actions")
 
 local M = {}
 
 M.cache = {}
+
+local function render_issue(buf, key, issue, is_new)
+  if not vim.api.nvim_buf_is_valid(buf) then return end
+
+  local itype = issue.fields and (issue.fields.issuetype or issue.fields.issueType)
+  local lines = {
+    "---",
+    "Project: " .. (issue.fields and issue.fields.project and issue.fields.project.key or config.options.defaults.project),
+    "Type: " .. (itype and itype.name or config.options.defaults.issue_type),
+    "Status: " .. (issue.fields and issue.fields.status and issue.fields.status.name or "To Do"),
+    "Assignee: " .. (issue.fields and issue.fields.assignee and (issue.fields.assignee.displayName or issue.fields.assignee.name) or "Unassigned"),
+    "---",
+    "# Summary",
+    issue.fields and issue.fields.summary or "",
+    "",
+    "# Description",
+  }
+
+  if issue.fields and issue.fields.description then
+    local desc_lines = vim.split(issue.fields.description, "\n")
+    for _, l in ipairs(desc_lines) do
+      table.insert(lines, l)
+    end
+  end
+
+  M.cache[buf] = {
+    key = key,
+    is_new = is_new,
+    original = issue,
+  }
+
+  local old_undolevels = vim.bo[buf].undolevels
+  vim.bo[buf].undolevels = -1
+  vim.bo[buf].modifiable = true
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modified = false
+  vim.bo[buf].undolevels = old_undolevels
+
+  actions.setup_issue(buf)
+end
 
 ---@param buf number
 ---@param uri string
@@ -15,62 +56,16 @@ function M.open(buf, uri)
   vim.bo[buf].buftype = "acwrite"
   vim.bo[buf].filetype = "markdown"
   vim.bo[buf].bufhidden = "hide"
-
-  local old_undolevels = vim.bo[buf].undolevels
-  vim.bo[buf].undolevels = -1
+  vim.b[buf].jira_oil_kind = "issue"
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Loading issue " .. key .. "..." })
 
-  local function render(issue)
-    if not vim.api.nvim_buf_is_valid(buf) then return end
-
-    local itype = issue.fields and (issue.fields.issuetype or issue.fields.issueType)
-    local lines = {
-      "---",
-      "Project: " .. (issue.fields and issue.fields.project and issue.fields.project.key or config.options.defaults.project),
-      "Type: " .. (itype and itype.name or config.options.defaults.issue_type),
-      "Status: " .. (issue.fields and issue.fields.status and issue.fields.status.name or "To Do"),
-      "Assignee: " .. (issue.fields and issue.fields.assignee and (issue.fields.assignee.displayName or issue.fields.assignee.name) or "Unassigned"),
-      "---",
-      "# Summary",
-      issue.fields and issue.fields.summary or "",
-      "",
-      "# Description",
-    }
-
-    if issue.fields and issue.fields.description then
-      local desc_lines = vim.split(issue.fields.description, "\n")
-      for _, l in ipairs(desc_lines) do
-        table.insert(lines, l)
-      end
-    end
-
-    M.cache[buf] = {
-      key = key,
-      is_new = key == "new",
-      original = issue,
-    }
-
-    vim.bo[buf].modifiable = true
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-    vim.bo[buf].modified = false
-    vim.bo[buf].undolevels = old_undolevels
-
-    local km = config.options.keymaps
-    vim.keymap.set("n", km.save, function()
-      M.save(buf)
-    end, { buffer = buf, desc = "Save issue" })
-    vim.keymap.set("n", km.close, function()
-      vim.api.nvim_buf_delete(buf, { force = true })
-    end, { buffer = buf, desc = "Close issue" })
-  end
-
   if key == "new" then
-    render({ fields = {} })
+    render_issue(buf, key, { fields = {} }, true)
   else
     cli.get_issue(key, function(issue)
       if issue then
-        render(issue)
+        render_issue(buf, key, issue, false)
       else
         vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Error loading issue " .. key })
       end
@@ -179,6 +174,13 @@ function M.save(buf)
       end
     end)
   end
+end
+
+function M.reset(buf)
+  local data = M.cache[buf]
+  if not data then return end
+  local issue = data.original or { fields = {} }
+  render_issue(buf, data.key, issue, data.is_new)
 end
 
 return M

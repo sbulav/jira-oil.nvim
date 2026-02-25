@@ -1,37 +1,88 @@
 local config = require("jira-oil.config")
-local scratch = require("jira-oil.scratch")
 local parser = require("jira-oil.parser")
 local mutator = require("jira-oil.mutator")
+local keymap_util = require("jira-oil.keymap_util")
 
 local M = {}
 
----@param buf number
-function M.setup(buf)
-  local km = config.options.keymaps
-
-  vim.keymap.set("n", km.open, function()
+M.select = {
+  desc = "Open Jira issue",
+  callback = function()
     local line = vim.api.nvim_get_current_line()
     local parsed = parser.parse_line(line)
     if parsed and parsed.key and parsed.key ~= "" then
       vim.cmd("edit jira-oil://issue/" .. parsed.key)
     end
-  end, { buffer = buf, desc = "Open Jira issue" })
+  end,
+}
 
-  vim.keymap.set("n", km.create, function()
+M.create = {
+  desc = "Create new Jira issue",
+  callback = function()
     vim.cmd("edit jira-oil://issue/new")
-  end, { buffer = buf, desc = "Create new Jira issue" })
+  end,
+}
 
-  vim.keymap.set("n", km.refresh, function()
+M.refresh = {
+  desc = "Refresh Jira issues",
+  callback = function(opts)
+    local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
     require("jira-oil.view").refresh(buf)
-  end, { buffer = buf, desc = "Refresh Jira issues" })
+  end,
+}
 
-  vim.keymap.set("n", km.save, function()
-    require("jira-oil.mutator").save(buf)
-  end, { buffer = buf, desc = "Save Jira issues" })
+M.save = {
+  desc = "Save Jira changes",
+  callback = function(opts)
+    local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
+    if vim.b[buf].jira_oil_kind == "issue" then
+      require("jira-oil.scratch").save(buf)
+    else
+      mutator.save(buf)
+    end
+  end,
+}
 
-  vim.keymap.set("n", km.close, function()
+M.reset = {
+  desc = "Reset unsaved changes",
+  callback = function(opts)
+    local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
+    if vim.b[buf].jira_oil_kind == "issue" then
+      require("jira-oil.scratch").reset(buf)
+    else
+      require("jira-oil.view").reset(buf)
+    end
+  end,
+}
+
+M.close = {
+  desc = "Close Jira buffer",
+  callback = function(opts)
+    local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
     vim.api.nvim_buf_delete(buf, { force = true })
-  end, { buffer = buf, desc = "Close Jira issues list" })
+  end,
+}
+
+M.show_help = {
+  desc = "Show keymaps help",
+  callback = function()
+    local buf = vim.api.nvim_get_current_buf()
+    local keymaps = config.options.keymaps
+    if vim.b[buf].jira_oil_kind == "issue" then
+      keymaps = config.options.keymaps_issue
+    end
+    keymap_util.show_help(keymaps)
+  end,
+}
+
+---@param buf number
+function M.setup(buf)
+  keymap_util.set_keymaps(config.options.keymaps, buf)
+end
+
+---@param buf number
+function M.setup_issue(buf)
+  keymap_util.set_keymaps(config.options.keymaps_issue, buf)
 end
 
 return M

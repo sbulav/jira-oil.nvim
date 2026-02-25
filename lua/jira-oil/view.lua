@@ -21,6 +21,7 @@ function M.open(buf, uri)
   vim.bo[buf].filetype = "jira-oil"
   vim.bo[buf].bufhidden = "hide"
   vim.bo[buf].swapfile = false
+  vim.b[buf].jira_oil_kind = "list"
 
   -- Disable undo while loading
   local old_undolevels = vim.bo[buf].undolevels
@@ -47,6 +48,7 @@ function M.open(buf, uri)
       uri = uri,
       target = target,
       original = structured,
+      original_lines = vim.deepcopy(lines),
     }
 
     vim.bo[buf].modifiable = true
@@ -86,6 +88,26 @@ function M.refresh(buf)
   if data then
     M.open(buf, data.uri)
   end
+end
+
+function M.reset(buf)
+  local data = M.cache[buf]
+  if not data or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+
+  if not data.original_lines then
+    return
+  end
+
+  local lines = vim.deepcopy(data.original_lines)
+
+  local old_undolevels = vim.bo[buf].undolevels
+  vim.bo[buf].undolevels = -1
+  vim.bo[buf].modifiable = true
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modified = false
+  vim.bo[buf].undolevels = old_undolevels
 end
 
 return M
