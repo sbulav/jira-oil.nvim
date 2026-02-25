@@ -482,16 +482,38 @@ function M.execute_mutations(buf, mutations)
             do_status(skip_on_error)
             return
           end
-          local assignee = m.item.assignee
-          if assignee == "Unassigned" then assignee = "x" end
-          cli.exec({ "issue", "assign", m.key, assignee }, function(_, stderr, code)
-            if code ~= 0 then
-              vim.notify("Failed to update assignee " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-              has_errors = true
-              do_status(true)
-            else
-              do_status(false)
-            end
+
+          local function assign_with_value(assignee)
+            cli.exec({ "issue", "assign", m.key, assignee }, function(_, stderr, code)
+              if code ~= 0 then
+                vim.notify("Failed to update assignee " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+                has_errors = true
+                do_status(true)
+              else
+                do_status(false)
+              end
+            end)
+          end
+
+          local assignee_input = m.item.assignee
+          if assignee_input == "Unassigned" then
+            assign_with_value("x")
+            return
+          end
+
+          -- Fast path: already a CLI-friendly token (login/account key), or
+          -- explicit mapping notation "Name -> login".
+          local resolved = util.resolve_assignee_for_cli(assignee_input, nil)
+          if resolved and resolved ~= "" then
+            assign_with_value(resolved)
+            return
+          end
+
+          -- Fallback path: try to resolve from the current assignee object.
+          cli.get_issue(m.key, function(issue)
+            local source_assignee = issue and issue.fields and issue.fields.assignee or nil
+            local resolved_from_source = util.resolve_assignee_for_cli(assignee_input, source_assignee)
+            assign_with_value((resolved_from_source and resolved_from_source ~= "") and resolved_from_source or assignee_input)
           end)
         end
 

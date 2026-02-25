@@ -948,16 +948,35 @@ function M.save(buf)
       table.insert(steps, {
         desc = "update assignee",
         fn = function(next_cb)
-          local assignee = diff.new_assignee
-          if assignee == "Unassigned" then assignee = "x" end
-          cli.exec({ "issue", "assign", data.key, assignee }, function(_, stderr, code)
-            if code ~= 0 then
-              vim.notify("Failed to update assignee for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-              next_cb(true)
-            else
-              next_cb(false)
-            end
-          end)
+          local function assign_with_value(assignee)
+            cli.exec({ "issue", "assign", data.key, assignee }, function(_, stderr, code)
+              if code ~= 0 then
+                vim.notify("Failed to update assignee for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+                next_cb(true)
+              else
+                next_cb(false)
+              end
+            end)
+          end
+
+          local assignee_input = diff.new_assignee
+          if assignee_input == "Unassigned" then
+            assign_with_value("x")
+            return
+          end
+
+          -- Fast path for login/account token or explicit mapping notation.
+          local resolved = util.resolve_assignee_for_cli(assignee_input, nil)
+          if resolved and resolved ~= "" then
+            assign_with_value(resolved)
+            return
+          end
+
+          -- Fallback: resolve from current cached source assignee; if that
+          -- still fails, pass through the raw input for jira-cli resolution.
+          local source_assignee = data.original and data.original.fields and data.original.fields.assignee or nil
+          local resolved_from_source = util.resolve_assignee_for_cli(assignee_input, source_assignee)
+          assign_with_value((resolved_from_source and resolved_from_source ~= "") and resolved_from_source or assignee_input)
         end,
       })
     end

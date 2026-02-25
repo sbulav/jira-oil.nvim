@@ -80,6 +80,18 @@ function M.resolve_assignee_for_cli(input, source_assignee)
   end
 
   local value = M.trim(input or "")
+  -- Allow explicit mapping notation, e.g. "Full Name -> login"
+  -- or "Full Name → login"; RHS wins when present.
+  do
+    local mapped = value:match("%-%>%s*(.+)$") or value:match("→%s*(.+)$")
+    if mapped then
+      mapped = M.trim(mapped)
+      if mapped ~= "" then
+        value = mapped
+      end
+    end
+  end
+
   if value == "" then
     return nil
   end
@@ -106,10 +118,6 @@ function M.resolve_assignee_for_cli(input, source_assignee)
       if prefix ~= "" and src_display:sub(1, #prefix) == prefix then
         return src_login
       end
-    end
-
-    if not is_cli_token(value) then
-      return src_login
     end
   end
 
