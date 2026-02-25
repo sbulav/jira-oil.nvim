@@ -30,45 +30,22 @@ local function apply_issue_winbar(buf)
 
   local title = "Jira Issue"
   if data.key == "new" then
-    title = "Jira Issue: NEW"
+    title = "Jira Issue:  NEW"
   elseif data.key and data.key ~= "" then
-    title = "Jira Issue: " .. data.key
+    title = "Jira Issue:  " .. data.key
   end
 
   if not data.is_new and has_draft_for_key(data.key) then
     title = title .. " [draft]"
   end
 
-  local function gutter_width(win)
-    local width = 0
-    local wo = vim.wo[win]
-
-    if wo.number or wo.relativenumber then
-      width = width + wo.numberwidth
-    end
-
-    local sc = wo.signcolumn
-    if sc ~= "no" then
-      local n = sc:match("yes:(%d+)") or sc:match("auto:(%d+)")
-      if n then
-        width = width + tonumber(n)
-      elseif sc == "yes" or sc == "auto" or sc == "number" then
-        width = width + 2
-      end
-    end
-
-    local fc = wo.foldcolumn
-    local fcn = tostring(fc):match("(%d+)")
-    if fcn then
-      width = width + tonumber(fcn)
-    end
-
-    return width
-  end
-
   for _, win in ipairs(vim.fn.win_findbuf(buf)) do
-    local pad = string.rep(" ", gutter_width(win))
-    vim.wo[win].winbar = pad .. title
+    local textoff = 0
+    local info = vim.fn.getwininfo(win)
+    if info and info[1] and info[1].textoff then
+      textoff = tonumber(info[1].textoff) or 0
+    end
+    vim.wo[win].winbar = string.rep(" ", textoff) .. title
   end
 end
 
