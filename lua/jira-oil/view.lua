@@ -53,6 +53,7 @@ local function define_highlights()
   hl("JiraOilSectionRule",  { link = "WinSeparator" })
   hl("JiraOilSectionLabel", { link = "Title" })
   hl("JiraOilSectionCount", { link = "Comment" })
+  hl("JiraOilDraft", { link = "Comment" })
 
   -- Winbar
   hl("JiraOilWinbar",        { link = "WinBar" })
@@ -134,6 +135,8 @@ end
 ---@param backlog_count number
 ---@param target string
 local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, target)
+  local scratch = require("jira-oil.scratch")
+
   vim.api.nvim_buf_clear_namespace(buf, M.ns, 0, -1)
   vim.api.nvim_buf_clear_namespace(buf, M.ns_keys, 0, -1)
 
@@ -174,6 +177,13 @@ local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_c
           virt_text_pos = "inline",
           right_gravity = false,
         })
+
+        if scratch.get_draft(key) then
+          vim.api.nvim_buf_set_extmark(buf, M.ns, row, 0, {
+            virt_text = { { " [draft]", "JiraOilDraft" } },
+            virt_text_pos = "eol",
+          })
+        end
       else
         -- New issue line placeholder keeps alignment and marks create intent.
         local source_key = M.get_copy_source_at_line(buf, row)

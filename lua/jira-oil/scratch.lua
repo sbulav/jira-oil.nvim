@@ -7,8 +7,95 @@ local M = {}
 
 M.cache = {}
 M.pending_prefill = nil
+M.pending_existing = {}
+M.drafts = {}
 M.ns = vim.api.nvim_create_namespace("JiraOilIssue")
 M.ns_anchor = vim.api.nvim_create_namespace("JiraOilIssueAnchor")
+
+---@param key string
+---@return boolean
+local function has_draft_for_key(key)
+  return key and key ~= "" and M.drafts[key] ~= nil
+end
+
+---@param buf number
+local function apply_issue_winbar(buf)
+  if not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+  local data = M.cache[buf]
+  if not data then
+    return
+  end
+
+  local title = "Jira Issue"
+  if data.key == "new" then
+    title = "Jira Issue: NEW"
+  elseif data.key and data.key ~= "" then
+    title = "Jira Issue: " .. data.key
+  end
+
+  if not data.is_new and has_draft_for_key(data.key) then
+    title = title .. " [draft]"
+  end
+
+  local function gutter_width(win)
+    local width = 0
+    local wo = vim.wo[win]
+
+    if wo.number or wo.relativenumber then
+      width = width + wo.numberwidth
+    end
+
+    local sc = wo.signcolumn
+    if sc ~= "no" then
+      local n = sc:match("yes:(%d+)") or sc:match("auto:(%d+)")
+      if n then
+        width = width + tonumber(n)
+      elseif sc == "yes" or sc == "auto" or sc == "number" then
+        width = width + 2
+      end
+    end
+
+    local fc = wo.foldcolumn
+    local fcn = tostring(fc):match("(%d+)")
+    if fcn then
+      width = width + tonumber(fcn)
+    end
+
+    return width
+  end
+
+  for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+    local pad = string.rep(" ", gutter_width(win))
+    vim.wo[win].winbar = pad .. title
+  end
+end
+
+---@param key string
+local function refresh_winbar_for_key(key)
+  if not key or key == "" then
+    return
+  end
+  for buf, data in pairs(M.cache) do
+    if data and data.key == key and vim.api.nvim_buf_is_valid(buf) then
+      apply_issue_winbar(buf)
+    end
+  end
+end
+
+local function refresh_list_draft_markers()
+  local ok, view = pcall(require, "jira-oil.view")
+  if not ok or not view or not view.cache then
+    return
+  end
+
+  for buf, data in pairs(view.cache) do
+    if data and vim.api.nvim_buf_is_valid(buf) and vim.b[buf].jira_oil_kind == "list" then
+      view.decorate_current(buf)
+    end
+  end
+end
 
 local function build_issue_from_prefill(prefill, source_issue)
   local issue = vim.deepcopy(source_issue or { fields = {} })
@@ -42,6 +129,85 @@ local function build_issue_from_prefill(prefill, source_issue)
   end
 
   return issue
+end
+
+---@param issue table
+---@param row table|nil
+local function apply_row_overrides(issue, row)
+  if not row then
+    return
+  end
+  issue.fields = issue.fields or {}
+
+  if row.summary and row.summary ~= "" then
+    issue.fields.summary = row.summary
+  end
+
+  if row.assignee and row.assignee ~= "" then
+    if row.assignee == "Unassigned" then
+      issue.fields.assignee = nil
+    else
+      issue.fields.assignee = { displayName = row.assignee }
+    end
+  end
+
+  if row.status and row.status ~= "" then
+    issue.fields.status = { name = row.status }
+  end
+
+  if row.type and row.type ~= "" then
+    issue.fields.issuetype = { name = row.type }
+    issue.fields.issueType = issue.fields.issuetype
+  end
+end
+
+---@param issue table
+---@param parsed table|nil
+local function apply_parsed_overrides(issue, parsed)
+  if not parsed then
+    return
+  end
+  issue.fields = issue.fields or {}
+
+  if parsed.summary and parsed.summary ~= "" then
+    issue.fields.summary = parsed.summary
+  end
+
+  if parsed.fields then
+    local status = parsed.fields.status or ""
+    if status ~= "" then
+      issue.fields.status = { name = status }
+    end
+
+    local assignee = parsed.fields.assignee or ""
+    if assignee ~= "" then
+      if assignee == "Unassigned" then
+        issue.fields.assignee = nil
+      else
+        issue.fields.assignee = { displayName = assignee }
+      end
+    end
+
+    local itype = parsed.fields.type or ""
+    if itype ~= "" then
+      issue.fields.issuetype = { name = itype }
+      issue.fields.issueType = issue.fields.issuetype
+    end
+
+    local comps = parsed.fields.components or ""
+    if comps ~= "" then
+      local list = {}
+      for comp in string.gmatch(comps, "[^,]+") do
+        comp = vim.trim(comp)
+        if comp ~= "" then
+          table.insert(list, { name = comp })
+        end
+      end
+      issue.fields.components = list
+    end
+  end
+
+  issue.fields.description = parsed.description or ""
 end
 
 local function define_highlights()
@@ -225,6 +391,7 @@ local function render_issue(buf, key, issue, is_new)
   anchors.description = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 9, 0, { right_gravity = false })
 
   apply_issue_decorations(buf)
+  apply_issue_winbar(buf)
   actions.setup_issue(buf)
 end
 
@@ -369,14 +536,28 @@ function M.open(buf, uri)
       render_issue(buf, key, issue, true)
     end
   else
+    local pending = M.pending_existing[key]
+    M.pending_existing[key] = nil
+    local draft = M.drafts[key]
     cli.get_issue(key, function(issue)
       if issue then
+        apply_row_overrides(issue, pending and pending.row_fields or nil)
+        apply_parsed_overrides(issue, draft and draft.parsed or nil)
         render_issue(buf, key, issue, false)
       else
         vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Error loading issue " .. key })
       end
     end)
   end
+end
+
+---@param key string
+---@param row_fields table|nil
+function M.open_existing(key, row_fields)
+  M.pending_existing[key] = {
+    row_fields = row_fields,
+  }
+  vim.cmd.edit("jira-oil://issue/" .. key)
 end
 
 ---@param prefill table|nil
@@ -529,6 +710,73 @@ local function compute_issue_diff(data, parsed)
   changes.new_type = new_type
 
   return changes
+end
+
+---@param diff table
+---@return boolean
+local function has_any_changes(diff)
+  return diff.summary_changed
+    or diff.description_changed
+    or diff.assignee_changed
+    or diff.status_changed
+    or diff.epic_changed
+    or diff.components_changed
+    or diff.type_changed
+end
+
+---@param key string
+---@return table|nil
+function M.get_draft(key)
+  local draft = M.drafts[key]
+  if not draft then
+    return nil
+  end
+  return vim.deepcopy(draft)
+end
+
+---@return table<string, table>
+function M.get_all_drafts()
+  return vim.deepcopy(M.drafts)
+end
+
+---@param key string
+function M.clear_draft(key)
+  M.drafts[key] = nil
+  refresh_winbar_for_key(key)
+  refresh_list_draft_markers()
+end
+
+function M.clear_all_drafts()
+  local keys = {}
+  for key, _ in pairs(M.drafts) do
+    table.insert(keys, key)
+  end
+  M.drafts = {}
+  for _, key in ipairs(keys) do
+    refresh_winbar_for_key(key)
+  end
+  refresh_list_draft_markers()
+end
+
+---@param buf number
+function M.capture_draft(buf)
+  local data = M.cache[buf]
+  if not data or not data.key or data.key == "" or data.key == "new" then
+    return
+  end
+
+  local parsed = M.parse_buffer(buf)
+  local diff = compute_issue_diff(data, parsed)
+  if has_any_changes(diff) then
+    M.drafts[data.key] = {
+      parsed = parsed,
+      diff = diff,
+    }
+  else
+    M.drafts[data.key] = nil
+  end
+  refresh_winbar_for_key(data.key)
+  refresh_list_draft_markers()
 end
 
 ---Execute a sequence of async steps, calling done_cb when all complete
@@ -812,6 +1060,7 @@ function M.save(buf)
 
     if #steps == 0 then
       vim.notify("No changes to apply.", vim.log.levels.INFO)
+      M.clear_draft(data.key)
       if vim.api.nvim_buf_is_valid(buf) then
         vim.bo[buf].modified = false
       end
@@ -864,6 +1113,7 @@ function M.save(buf)
           end
         end
         vim.notify("Issue " .. data.key .. " updated successfully!", vim.log.levels.INFO)
+        M.clear_draft(data.key)
       end
       if vim.api.nvim_buf_is_valid(buf) then
         vim.bo[buf].modified = false
@@ -875,6 +1125,9 @@ end
 function M.reset(buf)
   local data = M.cache[buf]
   if not data then return end
+  if not data.is_new and data.key and data.key ~= "" then
+    M.clear_draft(data.key)
+  end
   local issue = data.original or { fields = {} }
   render_issue(buf, data.key, issue, data.is_new)
 end

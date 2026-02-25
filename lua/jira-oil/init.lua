@@ -47,6 +47,14 @@ function M.setup(opts)
     end,
   })
 
+  vim.api.nvim_create_autocmd("BufLeave", {
+    group = group,
+    pattern = "jira-oil://issue/*",
+    callback = function(args)
+      scratch.capture_draft(args.buf)
+    end,
+  })
+
   vim.api.nvim_create_autocmd("TextYankPost", {
     group = group,
     pattern = "*",

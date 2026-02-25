@@ -71,7 +71,9 @@ M.select = {
     local row = vim.api.nvim_win_get_cursor(0)[1] - 1 -- 0-indexed
     local key = view.get_key_at_line(buf, row)
     if key and key ~= "" then
-      vim.cmd.edit("jira-oil://issue/" .. key)
+      local line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] or ""
+      local parsed = parser.parse_line(line)
+      scratch.open_existing(key, parsed)
       return
     end
 
@@ -131,6 +133,7 @@ M.reset = {
     if vim.b[buf].jira_oil_kind == "issue" then
       require("jira-oil.scratch").reset(buf)
     else
+      require("jira-oil.scratch").clear_all_drafts()
       require("jira-oil.view").reset(buf)
     end
   end,
@@ -156,6 +159,9 @@ M.close = {
   desc = "Close Jira buffer",
   callback = function(opts)
     local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
+    if vim.b[buf].jira_oil_kind == "issue" then
+      require("jira-oil.scratch").capture_draft(buf)
+    end
     vim.api.nvim_buf_delete(buf, { force = true })
   end,
 }

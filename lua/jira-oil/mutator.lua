@@ -12,6 +12,7 @@ local M = {}
 ---@return table[]
 function M.compute_diff(buf)
   local view = require("jira-oil.view")
+  local scratch = require("jira-oil.scratch")
   local data = view.cache[buf]
   if not data then return {} end
 
@@ -109,22 +110,91 @@ function M.compute_diff(buf)
     end
   end
 
+  local drafts = scratch.get_all_drafts()
+
   for _, item in ipairs(current) do
     if item.is_new then
       table.insert(mutations, { type = "CREATE", item = item })
     else
       local orig = original_by_key[item.key]
       if orig then
+        local draft = drafts[item.key]
+        local draft_parsed = draft and draft.parsed or nil
+
+        local eff_status = item.status
+        local eff_assignee = item.assignee
+        local eff_summary = item.summary
+        local eff_description = orig.description or ""
+
+        if draft_parsed then
+          if draft_parsed.fields and draft_parsed.fields.status and draft_parsed.fields.status ~= "" then
+            eff_status = draft_parsed.fields.status
+          end
+          if draft_parsed.fields and draft_parsed.fields.assignee and draft_parsed.fields.assignee ~= "" then
+            eff_assignee = draft_parsed.fields.assignee
+          end
+          if draft_parsed.summary and draft_parsed.summary ~= "" then
+            eff_summary = draft_parsed.summary
+          end
+          eff_description = draft_parsed.description or ""
+        end
+
         local updates = {}
         if orig.section and item.section and orig.section ~= item.section then
           local dest = item.section == "backlog" and "BACKLOG" or "SPRINT"
           table.insert(mutations, { type = "MOVE", key = item.key, dest = dest })
         end
-        if item.status ~= orig.status then table.insert(updates, "status: " .. orig.status .. " -> " .. item.status) end
-        if item.assignee ~= orig.assignee then table.insert(updates, "assignee: " .. orig.assignee .. " -> " .. item.assignee) end
-        if item.summary ~= orig.summary then table.insert(updates, "summary: " .. orig.summary .. " -> " .. item.summary) end
+        if eff_status ~= orig.status then table.insert(updates, "status: " .. orig.status .. " -> " .. eff_status) end
+        if eff_assignee ~= orig.assignee then table.insert(updates, "assignee: " .. orig.assignee .. " -> " .. eff_assignee) end
+        if eff_summary ~= orig.summary then table.insert(updates, "summary: " .. orig.summary .. " -> " .. eff_summary) end
+        if eff_description ~= (orig.description or "") then table.insert(updates, "description: [changed]") end
         if #updates > 0 then
-          table.insert(mutations, { type = "UPDATE", key = item.key, updates = updates, item = item })
+          local effective_item = vim.deepcopy(item)
+          effective_item.status = eff_status
+          effective_item.assignee = eff_assignee
+          effective_item.summary = eff_summary
+          effective_item.description = eff_description
+          table.insert(mutations, { type = "UPDATE", key = item.key, updates = updates, item = effective_item })
+        end
+      end
+    end
+  end
+
+  -- Include scratch-only drafts even if the issue is untouched in the list view.
+  for key, draft in pairs(drafts) do
+    if current_by_key[key] and original_by_key[key] then
+      local already = false
+      for _, m in ipairs(mutations) do
+        if m.type == "UPDATE" and m.key == key then
+          already = true
+          break
+        end
+      end
+      if not already then
+        local orig = original_by_key[key]
+        local parsed = draft and draft.parsed or nil
+        if parsed then
+          local updates = {}
+          local eff_status = parsed.fields and parsed.fields.status or orig.status
+          local eff_assignee = parsed.fields and parsed.fields.assignee or orig.assignee
+          local eff_summary = parsed.summary ~= "" and parsed.summary or orig.summary
+          local eff_description = parsed.description or ""
+
+          if eff_status ~= orig.status then table.insert(updates, "status: " .. orig.status .. " -> " .. eff_status) end
+          if eff_assignee ~= orig.assignee then table.insert(updates, "assignee: " .. orig.assignee .. " -> " .. eff_assignee) end
+          if eff_summary ~= orig.summary then table.insert(updates, "summary: " .. orig.summary .. " -> " .. eff_summary) end
+          if eff_description ~= (orig.description or "") then table.insert(updates, "description: [changed]") end
+
+          if #updates > 0 then
+            local item = {
+              key = key,
+              status = eff_status,
+              assignee = eff_assignee,
+              summary = eff_summary,
+              description = eff_description,
+            }
+            table.insert(mutations, { type = "UPDATE", key = key, updates = updates, item = item })
+          end
         end
       end
     end
@@ -219,6 +289,7 @@ end
 ---@param mutations table[]
 function M.execute_mutations(buf, mutations)
   local view = require("jira-oil.view")
+  local scratch = require("jira-oil.scratch")
   local data = view.cache[buf]
   local total = #mutations
   local done = 0
@@ -375,18 +446,23 @@ function M.execute_mutations(buf, mutations)
         end
       elseif m.type == "UPDATE" then
         local summary_changed = false
+        local description_changed = false
         local assignee_changed = false
         local status_changed = false
         for _, update in ipairs(m.updates) do
           if update:match("^summary:") then summary_changed = true end
+          if update:match("^description:") then description_changed = true end
           if update:match("^assignee:") then assignee_changed = true end
           if update:match("^status:") then status_changed = true end
         end
 
-        -- Build sequential chain: summary -> assignee -> status
+        -- Build sequential chain: summary/description -> assignee -> status
         -- Short-circuit on error to avoid inconsistent state
         local function do_status(skip_on_error)
           if skip_on_error or not status_changed then
+            if not skip_on_error then
+              scratch.clear_draft(m.key)
+            end
             check_done()
             return
           end
@@ -394,6 +470,8 @@ function M.execute_mutations(buf, mutations)
             if code ~= 0 then
               vim.notify("Failed to update status " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
               has_errors = true
+            else
+              scratch.clear_draft(m.key)
             end
             check_done()
           end)
@@ -417,11 +495,19 @@ function M.execute_mutations(buf, mutations)
           end)
         end
 
-        if summary_changed then
-          local args = { "issue", "edit", m.key, "--no-input", "-s", m.item.summary }
+        if summary_changed or description_changed then
+          local args = { "issue", "edit", m.key, "--no-input" }
+          if summary_changed then
+            table.insert(args, "-s")
+            table.insert(args, m.item.summary)
+          end
+          if description_changed then
+            table.insert(args, "--body")
+            table.insert(args, m.item.description or "")
+          end
           cli.exec(args, function(_, stderr, code)
             if code ~= 0 then
-              vim.notify("Failed to update summary " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              vim.notify("Failed to update issue " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
               has_errors = true
               do_assign(true)
             else
