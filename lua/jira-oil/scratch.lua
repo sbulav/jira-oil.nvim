@@ -204,6 +204,20 @@ function M.open(buf, uri)
   vim.bo[buf].bufhidden = "hide"
   vim.b[buf].jira_oil_kind = "issue"
 
+  if not vim.b[buf].jira_oil_keymap_autocmd then
+    vim.b[buf].jira_oil_keymap_autocmd = true
+    vim.api.nvim_create_autocmd("BufEnter", {
+      buffer = buf,
+      callback = function()
+        vim.schedule(function()
+          if vim.api.nvim_buf_is_valid(buf) then
+            actions.setup_issue(buf)
+          end
+        end)
+      end,
+    })
+  end
+
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Loading issue " .. key .. "..." })
 
   if key == "new" then
