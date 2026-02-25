@@ -6,12 +6,85 @@ local actions = require("jira-oil.actions")
 local M = {}
 
 M.cache = {}
+M.ns = vim.api.nvim_create_namespace("JiraOilIssue")
+M.ns_anchor = vim.api.nvim_create_namespace("JiraOilIssueAnchor")
+
+local function define_highlights()
+  vim.api.nvim_set_hl(0, "JiraOilIssueLabel", { link = "Identifier", default = true })
+  vim.api.nvim_set_hl(0, "JiraOilIssueDivider", { link = "WinSeparator", default = true })
+  vim.api.nvim_set_hl(0, "JiraOilIssueValue", { link = "Normal", default = true })
+end
+
+define_highlights()
+vim.api.nvim_create_autocmd("ColorScheme", {
+  group = vim.api.nvim_create_augroup("JiraOilIssueHighlights", { clear = true }),
+  callback = define_highlights,
+})
 
 local function extract_epic_key(value)
   if not value or value == "" then
     return ""
   end
   return value:match("([A-Z0-9]+%-%d+)") or ""
+end
+
+local function get_field_row(buf, field)
+  local data = M.cache[buf]
+  if not data or not data.layout or not data.layout.anchors then
+    return nil
+  end
+  local id = data.layout.anchors[string.lower(field)]
+  if not id then
+    return nil
+  end
+  local pos = vim.api.nvim_buf_get_extmark_by_id(buf, M.ns_anchor, id, {})
+  if not pos or #pos == 0 then
+    return nil
+  end
+  return pos[1] + 1
+end
+
+local function apply_issue_decorations(buf)
+  local data = M.cache[buf]
+  if not data or not data.layout or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+
+  vim.api.nvim_buf_clear_namespace(buf, M.ns, 0, -1)
+
+  local label_width = data.layout.label_width or 12
+
+  local function add_label(field, hl)
+    local row = get_field_row(buf, field)
+    if not row then
+      return
+    end
+    local label = util.pad_right(field .. ":", label_width) .. " "
+    vim.api.nvim_buf_set_extmark(buf, M.ns, row - 1, 0, {
+      virt_text = { { label, hl or "JiraOilIssueLabel" } },
+      virt_text_pos = "inline",
+      right_gravity = false,
+    })
+  end
+
+  add_label("Project")
+  add_label("Epic")
+  add_label("Type")
+  add_label("Components")
+  add_label("Status")
+  add_label("Assignee")
+  add_label("Summary")
+  add_label("Description")
+
+  for _, divider in ipairs({ "divider1", "divider2" }) do
+    local row = get_field_row(buf, divider)
+    if row then
+      vim.api.nvim_buf_set_extmark(buf, M.ns, row - 1, 0, {
+        virt_text = { { string.rep("-", label_width + 24), "JiraOilIssueDivider" } },
+        virt_text_pos = "overlay",
+      })
+    end
+  end
 end
 
 local function render_issue(buf, key, issue, is_new)
@@ -60,34 +133,28 @@ local function render_issue(buf, key, issue, is_new)
     end
   end
 
-  local lines = {
-    "---",
-    "Project: " .. (issue.fields and issue.fields.project and issue.fields.project.key or config.options.defaults.project),
-    "Epic: " .. epic,
-    "Type: " .. (itype and itype.name or config.options.defaults.issue_type),
-    "Components: " .. components,
-    "Status: " .. status,
-    "Assignee: " .. assignee,
-    "---",
-    "# Summary",
-    issue.fields and issue.fields.summary or "",
-    "",
-    "# Description",
-  }
+  local project = issue.fields and issue.fields.project and issue.fields.project.key or config.options.defaults.project
+  local summary = issue.fields and issue.fields.summary or ""
 
-  if issue.fields and issue.fields.description then
-    local desc_lines = vim.split(issue.fields.description, "\n")
-    for _, l in ipairs(desc_lines) do
-      table.insert(lines, l)
-    end
+  local desc_lines = { "" }
+  if issue.fields and issue.fields.description and issue.fields.description ~= "" then
+    desc_lines = vim.split(issue.fields.description, "\n")
   end
 
-  M.cache[buf] = {
-    key = key,
-    is_new = is_new,
-    original = issue,
-    epic_key = epic_key,
+  local lines = {
+    project,
+    epic,
+    (itype and itype.name or config.options.defaults.issue_type),
+    components,
+    status,
+    assignee,
+    "",
+    summary,
+    "",
   }
+  for _, l in ipairs(desc_lines) do
+    table.insert(lines, l)
+  end
 
   local old_undolevels = vim.bo[buf].undolevels
   vim.bo[buf].undolevels = -1
@@ -96,24 +163,42 @@ local function render_issue(buf, key, issue, is_new)
   vim.bo[buf].modified = false
   vim.bo[buf].undolevels = old_undolevels
 
+  M.cache[buf] = {
+    key = key,
+    is_new = is_new,
+    original = issue,
+    epic_key = epic_key,
+    layout = {
+      label_width = 12,
+      anchors = {},
+    },
+  }
+
+  -- Seed stable field anchors in a dedicated namespace that is never cleared
+  -- by visual decoration refreshes.
+  vim.api.nvim_buf_clear_namespace(buf, M.ns_anchor, 0, -1)
+  local anchors = M.cache[buf].layout.anchors
+  anchors.project = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 0, 0, { right_gravity = false })
+  anchors.epic = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 1, 0, { right_gravity = false })
+  anchors.type = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 2, 0, { right_gravity = false })
+  anchors.components = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 3, 0, { right_gravity = false })
+  anchors.status = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 4, 0, { right_gravity = false })
+  anchors.assignee = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 5, 0, { right_gravity = false })
+  anchors.divider1 = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 6, 0, { right_gravity = false })
+  anchors.summary = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 7, 0, { right_gravity = false })
+  anchors.divider2 = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 8, 0, { right_gravity = false })
+  anchors.description = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 9, 0, { right_gravity = false })
+
+  apply_issue_decorations(buf)
   actions.setup_issue(buf)
 end
 
-local function find_field_line(buf, field)
-  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-  local prefix = field .. ":"
-  for i, line in ipairs(lines) do
-    if vim.startswith(line, prefix) then
-      return i
-    end
-  end
-  return nil
-end
-
 local function update_field(buf, field, value)
-  local line_nr = find_field_line(buf, field)
-  if line_nr then
-    vim.api.nvim_buf_set_lines(buf, line_nr - 1, line_nr, false, { string.format("%s: %s", field, value) })
+  local row = get_field_row(buf, field)
+  if row then
+    local line = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1] or ""
+    vim.api.nvim_buf_set_text(buf, row - 1, 0, row - 1, #line, { value })
+    apply_issue_decorations(buf)
   end
 end
 
@@ -159,11 +244,11 @@ local function pick_components(buf)
     return
   end
 
-  local line_nr = find_field_line(buf, "Components")
+  local line_nr = get_field_row(buf, "Components")
   local current_value = ""
   if line_nr then
     local lines = vim.api.nvim_buf_get_lines(buf, line_nr - 1, line_nr, false)
-    current_value = lines[1]:gsub("^Components:%s*", "")
+    current_value = util.trim(lines[1] or "")
   end
 
   local selected = {}
@@ -215,7 +300,7 @@ function M.open(buf, uri)
   if not key then return end
 
   vim.bo[buf].buftype = "acwrite"
-  vim.bo[buf].filetype = "markdown"
+  vim.bo[buf].filetype = "jira-oil-issue"
   vim.bo[buf].bufhidden = "hide"
   vim.bo[buf].swapfile = false
   vim.b[buf].jira_oil_kind = "issue"
@@ -249,11 +334,49 @@ function M.open(buf, uri)
   end
 end
 
----Parse scratch buffer lines
----@param lines table
+---Parse scratch buffer into a structured issue payload.
+---If passed a buffer number, parse using stable field anchors (extmarks).
+---If passed a raw line table, use the legacy parser as fallback.
+---@param input number|table
 ---@return table parsed
-function M.parse_buffer(lines)
+function M.parse_buffer(input)
   local parsed = { fields = {}, summary = "", description = "" }
+
+  if type(input) == "number" then
+    local buf = input
+    local data = M.cache[buf]
+    if not data or not data.layout then
+      return parsed
+    end
+
+    local function get_value(field)
+      local row = get_field_row(buf, field)
+      if not row then
+        return ""
+      end
+      local line = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1] or ""
+      return util.trim(line)
+    end
+
+    parsed.fields.project = get_value("Project")
+    parsed.fields.epic = get_value("Epic")
+    parsed.fields.type = get_value("Type")
+    parsed.fields.components = get_value("Components")
+    parsed.fields.status = get_value("Status")
+    parsed.fields.assignee = get_value("Assignee")
+    parsed.summary = get_value("Summary")
+
+    local desc_row = get_field_row(buf, "Description")
+    if desc_row then
+      local desc_lines = vim.api.nvim_buf_get_lines(buf, desc_row - 1, -1, false)
+      parsed.description = util.trim(table.concat(desc_lines, "\n"))
+    end
+
+    return parsed
+  end
+
+  -- Legacy fallback parser for raw line tables
+  local lines = input or {}
   local section = "frontmatter"
   local content = {}
 
@@ -385,8 +508,7 @@ function M.save(buf)
   local data = M.cache[buf]
   if not data then return end
 
-  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-  local parsed = M.parse_buffer(lines)
+  local parsed = M.parse_buffer(buf)
 
   if parsed.summary == "" then
     vim.notify("Summary cannot be empty.", vim.log.levels.ERROR)
