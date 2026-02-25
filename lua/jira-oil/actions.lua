@@ -87,6 +87,9 @@ M.select = {
     end
 
     local source_key = view.get_copy_source_at_line(buf, row)
+    if not source_key or source_key == "" then
+      source_key = fallback_source_from_last_yank(line)
+    end
     scratch.open_new({
       source_key = source_key,
       row_fields = parsed,
@@ -239,13 +242,7 @@ local function source_entries_for_paste(pasted_lines, reg)
   if not yank then
     return {}
   end
-  if normalize_reg(yank.regname) ~= normalize_reg(reg) then
-    return {}
-  end
   if #yank.lines == 0 or #yank.entries == 0 then
-    return {}
-  end
-  if table.concat(yank.lines, "\n") ~= table.concat(pasted_lines, "\n") then
     return {}
   end
 
@@ -255,6 +252,22 @@ local function source_entries_for_paste(pasted_lines, reg)
     out[i] = base
   end
   return out
+end
+
+---@param line string
+---@return string|nil
+local function fallback_source_from_last_yank(line)
+  local view = require("jira-oil.view")
+  local yank = view.last_yank
+  if not yank or not yank.entries then
+    return nil
+  end
+  for _, entry in ipairs(yank.entries) do
+    if entry.line == line and entry.source_key and entry.source_key ~= "" then
+      return entry.source_key
+    end
+  end
+  return nil
 end
 
 ---@param key string

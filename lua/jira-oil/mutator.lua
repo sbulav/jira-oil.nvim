@@ -28,6 +28,19 @@ function M.compute_diff(buf)
   -- Build a row -> key mapping from extmarks (survives line moves)
   local row_to_key = view.get_all_line_keys(buf)
   local row_to_source = view.get_all_copy_sources(buf)
+  local last_yank = view.last_yank
+
+  local function source_from_last_yank(line)
+    if not last_yank or not last_yank.entries then
+      return nil
+    end
+    for _, entry in ipairs(last_yank.entries) do
+      if entry.line == line and entry.source_key and entry.source_key ~= "" then
+        return entry.source_key
+      end
+    end
+    return nil
+  end
 
   -- Track which keys we've already seen to handle duplicates
   local seen_keys = {}
@@ -63,6 +76,9 @@ function M.compute_diff(buf)
             parsed.is_new = true
             parsed.row = lnum - 1
             parsed.source_key = row_to_source[lnum - 1]
+            if (not parsed.source_key or parsed.source_key == "") then
+              parsed.source_key = source_from_last_yank(line)
+            end
             -- Assign defaults for new issues
             if not parsed.type or parsed.type == "" then
               parsed.type = config.options.defaults.issue_type
