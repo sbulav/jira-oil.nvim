@@ -5,6 +5,15 @@ local default_config = {
   cli = {
     cmd = "jira",
     timeout = 10000,
+    cache = {
+      enabled = true,
+      ttl_ms = {
+        sprint_issues = 5000,
+        backlog_issues = 5000,
+        issue = 15000,
+        epics = 30000,
+      },
+    },
     issues = {
       columns = { "key", "assignee", "status", "summary", "labels" },
       team_jql = "",

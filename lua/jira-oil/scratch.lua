@@ -61,9 +61,15 @@ local function refresh_winbar_for_key(key)
   end
 end
 
-local function refresh_list_draft_markers()
+---@param key string|nil
+local function refresh_list_draft_markers(key)
   local ok, view = pcall(require, "jira-oil.view")
   if not ok or not view or not view.cache then
+    return
+  end
+
+  if key and key ~= "" and view.update_draft_marker_for_key then
+    view.update_draft_marker_for_key(key)
     return
   end
 
@@ -711,6 +717,27 @@ function M.get_draft(key)
   return vim.deepcopy(draft)
 end
 
+---@param key string
+---@return boolean
+function M.has_draft(key)
+  return has_draft_for_key(key)
+end
+
+---@param key string
+---@return table|nil
+function M.peek_draft(key)
+  return M.drafts[key]
+end
+
+---@return string[]
+function M.get_draft_keys()
+  local keys = {}
+  for key, _ in pairs(M.drafts) do
+    table.insert(keys, key)
+  end
+  return keys
+end
+
 ---@return table<string, table>
 function M.get_all_drafts()
   return vim.deepcopy(M.drafts)
@@ -720,7 +747,7 @@ end
 function M.clear_draft(key)
   M.drafts[key] = nil
   refresh_winbar_for_key(key)
-  refresh_list_draft_markers()
+  refresh_list_draft_markers(key)
 end
 
 function M.clear_all_drafts()
@@ -731,8 +758,8 @@ function M.clear_all_drafts()
   M.drafts = {}
   for _, key in ipairs(keys) do
     refresh_winbar_for_key(key)
+    refresh_list_draft_markers(key)
   end
-  refresh_list_draft_markers()
 end
 
 ---@param buf number
@@ -753,7 +780,7 @@ function M.capture_draft(buf)
     M.drafts[data.key] = nil
   end
   refresh_winbar_for_key(data.key)
-  refresh_list_draft_markers()
+  refresh_list_draft_markers(data.key)
 end
 
 ---Execute a sequence of async steps, calling done_cb when all complete
@@ -873,8 +900,10 @@ function M.save(buf)
             data.original.fields.project = { key = parsed.fields.project }
           end
           vim.api.nvim_buf_set_name(buf, "jira-oil://issue/" .. created_key)
+          cli.clear_cache("all")
           vim.notify("Issue created successfully: " .. created_key, vim.log.levels.INFO)
         else
+          cli.clear_cache("all")
           vim.notify("Issue created successfully!", vim.log.levels.INFO)
         end
         if vim.api.nvim_buf_is_valid(buf) then
@@ -1090,6 +1119,7 @@ function M.save(buf)
           end
         end
         vim.notify("Issue " .. data.key .. " updated successfully!", vim.log.levels.INFO)
+        cli.clear_cache("all")
         M.clear_draft(data.key)
       end
       if vim.api.nvim_buf_is_valid(buf) then

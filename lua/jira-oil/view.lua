@@ -7,6 +7,7 @@ local util = require("jira-oil.util")
 local M = {}
 
 M.cache = {}
+M.open_seq = {}
 
 --- Sentinel lines written into the buffer for section headers.
 --- The mutator treats any line matching one of these as a non-issue boundary.
@@ -22,6 +23,7 @@ M.ns = vim.api.nvim_create_namespace("JiraOilList")
 --- be queried independently without iterating all extmarks.
 M.ns_keys = vim.api.nvim_create_namespace("JiraOilKeys")
 M.ns_copy = vim.api.nvim_create_namespace("JiraOilCopiedSource")
+M.ns_draft = vim.api.nvim_create_namespace("JiraOilDraftMarker")
 
 M.last_yank = nil
 
@@ -140,6 +142,7 @@ local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_c
 
   vim.api.nvim_buf_clear_namespace(buf, M.ns, 0, -1)
   vim.api.nvim_buf_clear_namespace(buf, M.ns_keys, 0, -1)
+  vim.api.nvim_buf_clear_namespace(buf, M.ns_draft, 0, -1)
 
   local columns = config.options.view.columns
   local col_hl = config.options.view.column_highlights or {}
@@ -179,8 +182,8 @@ local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_c
           right_gravity = false,
         })
 
-        if (draft_keys and draft_keys[key]) or scratch.get_draft(key) then
-          vim.api.nvim_buf_set_extmark(buf, M.ns, row, 0, {
+        if (draft_keys and draft_keys[key]) or scratch.has_draft(key) then
+          vim.api.nvim_buf_set_extmark(buf, M.ns_draft, row, 0, {
             virt_text = { { " [draft]", "JiraOilDraft" } },
             virt_text_pos = "eol",
           })
@@ -304,6 +307,39 @@ local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_c
       vim.wo[win].winbar = wb
     end
   end
+end
+
+---@param issue_keys (string|nil)[]
+---@return table<string, number[]>
+local function build_rows_by_key(issue_keys)
+  local rows_by_key = {}
+  for i, key in ipairs(issue_keys or {}) do
+    if key and key ~= "" then
+      local row = i - 1
+      if not rows_by_key[key] then
+        rows_by_key[key] = {}
+      end
+      table.insert(rows_by_key[key], row)
+    end
+  end
+  return rows_by_key
+end
+
+---@param item table
+---@return string
+local function format_structured_item(item)
+  local issue = {
+    key = item.key,
+    fields = {
+      status = { name = item.status or "" },
+      summary = item.summary or "",
+      issuetype = { name = item.type or "" },
+    },
+  }
+  if item.assignee and item.assignee ~= "" and item.assignee ~= "Unassigned" then
+    issue.fields.assignee = { displayName = item.assignee }
+  end
+  return parser.format_line(issue)
 end
 
 -- ---------------------------------------------------------------------------
@@ -494,7 +530,7 @@ function M.decorate_current(buf)
       issue_keys[i] = key
       if line:match("%S") then
         if key and key ~= "" then
-          if scratch.get_draft(key) then
+          if scratch.has_draft(key) then
             draft_keys[key] = true
           else
             local parsed = parser.parse_line(line)
@@ -535,6 +571,7 @@ function M.decorate_current(buf)
   end
 
   apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, data.target, draft_keys)
+  data.rows_by_key = build_rows_by_key(issue_keys)
 end
 
 ---@param buf number
@@ -544,6 +581,13 @@ function M.open(buf, uri)
   if not target or (target ~= "sprint" and target ~= "backlog" and target ~= "all") then
     vim.notify("Invalid URI: " .. uri, vim.log.levels.ERROR)
     return
+  end
+
+  M.open_seq[buf] = (M.open_seq[buf] or 0) + 1
+  local seq = M.open_seq[buf]
+
+  local function is_stale_request()
+    return (M.open_seq[buf] ~= seq) or (not vim.api.nvim_buf_is_valid(buf))
   end
 
   vim.bo[buf].buftype = "acwrite"
@@ -579,14 +623,13 @@ function M.open(buf, uri)
   end
 
   local function finish(lines, issue_keys, structured, sprint_count, backlog_count)
-    if not vim.api.nvim_buf_is_valid(buf) then return end
+    if is_stale_request() then return end
 
     M.cache[buf] = {
       uri = uri,
       target = target,
       original = structured,
-      original_lines = vim.deepcopy(lines),
-      original_keys = vim.deepcopy(issue_keys),
+      rows_by_key = build_rows_by_key(issue_keys),
       copy_sources = {},
     }
 
@@ -601,7 +644,13 @@ function M.open(buf, uri)
 
   if target == "all" then
     cli.get_sprint_issues(function(sprint_issues)
+      if is_stale_request() then
+        return
+      end
       cli.get_backlog_issues(function(backlog_issues)
+        if is_stale_request() then
+          return
+        end
         local lines = {}
         local issue_keys = {}
         local structured = {}
@@ -624,6 +673,9 @@ function M.open(buf, uri)
   else
     local fetcher = target == "sprint" and cli.get_sprint_issues or cli.get_backlog_issues
     fetcher(function(issues)
+      if is_stale_request() then
+        return
+      end
       local lines = {}
       local issue_keys = {}
       local structured = {}
@@ -645,6 +697,7 @@ end
 function M.refresh(buf)
   local data = M.cache[buf]
   if data then
+    cli.clear_cache("all")
     M.open(buf, data.uri)
   end
 end
@@ -655,14 +708,45 @@ function M.reset(buf)
     return
   end
 
-  if not data.original_lines then
-    return
-  end
-
-  local lines = vim.deepcopy(data.original_lines)
-  local issue_keys = vim.deepcopy(data.original_keys or {})
+  local lines = {}
+  local issue_keys = {}
   data.copy_sources = {}
   vim.api.nvim_buf_clear_namespace(buf, M.ns_copy, 0, -1)
+
+  local function add_header(header)
+    table.insert(lines, header)
+    issue_keys[#lines] = nil
+  end
+
+  local function add_item(item)
+    local line = format_structured_item(item)
+    table.insert(lines, line)
+    issue_keys[#lines] = item.key or nil
+  end
+
+  if data.target == "all" then
+    add_header(M.header_sprint)
+    for _, item in ipairs(data.original or {}) do
+      if item.section == "sprint" then
+        add_item(item)
+      end
+    end
+    add_header(M.header_backlog)
+    for _, item in ipairs(data.original or {}) do
+      if item.section == "backlog" then
+        add_item(item)
+      end
+    end
+  else
+    local section = data.target
+    local header = section == "sprint" and M.header_sprint or M.header_backlog
+    add_header(header)
+    for _, item in ipairs(data.original or {}) do
+      if (item.section or section) == section then
+        add_item(item)
+      end
+    end
+  end
 
   local old_undolevels = vim.bo[buf].undolevels
   vim.bo[buf].undolevels = -1
@@ -687,6 +771,33 @@ function M.reset(buf)
   end
 
   apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, data.target, nil)
+  data.rows_by_key = build_rows_by_key(issue_keys)
+end
+
+---@param key string
+function M.update_draft_marker_for_key(key)
+  if not key or key == "" then
+    return
+  end
+  local scratch = require("jira-oil.scratch")
+  local has_draft = scratch.has_draft(key)
+
+  for buf, data in pairs(M.cache) do
+    if data and vim.api.nvim_buf_is_valid(buf) and vim.b[buf].jira_oil_kind == "list" then
+      local rows = data.rows_by_key and data.rows_by_key[key]
+      if rows and #rows > 0 then
+        for _, row in ipairs(rows) do
+          vim.api.nvim_buf_clear_namespace(buf, M.ns_draft, row, row + 1)
+          if has_draft then
+            vim.api.nvim_buf_set_extmark(buf, M.ns_draft, row, 0, {
+              virt_text = { { " [draft]", "JiraOilDraft" } },
+              virt_text_pos = "eol",
+            })
+          end
+        end
+      end
+    end
+  end
 end
 
 return M

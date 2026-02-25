@@ -87,6 +87,7 @@ function M.setup(opts)
     pattern = "jira-oil://*",
     callback = function(args)
       view.cache[args.buf] = nil
+      view.open_seq[args.buf] = nil
       scratch.cache[args.buf] = nil
       draft_capture_seq[args.buf] = nil
       list_decorate_seq[args.buf] = nil

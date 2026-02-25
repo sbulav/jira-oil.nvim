@@ -3,6 +3,64 @@ local util = require("jira-oil.util")
 
 local M = {}
 
+local response_cache = {}
+local inflight = {}
+local uv = vim.uv or vim.loop
+
+local function now_ms()
+  return uv.now()
+end
+
+local function cache_enabled()
+  local cache = config.options.cli.cache or {}
+  return cache.enabled ~= false
+end
+
+local function cache_ttl_ms(name, fallback)
+  local cache = config.options.cli.cache or {}
+  local ttl = cache.ttl_ms or {}
+  return ttl[name] or fallback
+end
+
+local function join_cmd(args)
+  return table.concat(args, "\31")
+end
+
+local function exec_cached(cache_key, args, ttl_ms, callback)
+  if cache_enabled() and ttl_ms and ttl_ms > 0 then
+    local entry = response_cache[cache_key]
+    if entry and entry.expires_at > now_ms() then
+      vim.schedule(function()
+        callback(entry.stdout, entry.stderr, entry.code)
+      end)
+      return
+    end
+  end
+
+  if inflight[cache_key] then
+    table.insert(inflight[cache_key], callback)
+    return
+  end
+  inflight[cache_key] = { callback }
+
+  M.exec(args, function(stdout, stderr, code)
+    if cache_enabled() and ttl_ms and ttl_ms > 0 and code == 0 then
+      response_cache[cache_key] = {
+        stdout = stdout,
+        stderr = stderr,
+        code = code,
+        expires_at = now_ms() + ttl_ms,
+      }
+    end
+
+    local waiters = inflight[cache_key] or {}
+    inflight[cache_key] = nil
+    for _, cb in ipairs(waiters) do
+      cb(stdout, stderr, code)
+    end
+  end)
+end
+
 local function parse_csv_line(line)
   local fields = {}
   local i = 1
@@ -120,6 +178,26 @@ function M.exec_sync(args)
   return obj.stdout, obj.stderr, obj.code
 end
 
+---@param scope string|nil
+function M.clear_cache(scope)
+  if not scope or scope == "all" then
+    response_cache = {}
+    inflight = {}
+    return
+  end
+
+  for key, _ in pairs(response_cache) do
+    if key:match("^" .. scope .. ":") then
+      response_cache[key] = nil
+    end
+  end
+  for key, _ in pairs(inflight) do
+    if key:match("^" .. scope .. ":") then
+      inflight[key] = nil
+    end
+  end
+end
+
 ---Fetch active sprint ID
 ---@param callback function(id)
 function M.get_active_sprint_id(callback)
@@ -154,7 +232,8 @@ function M.get_sprint_issues(callback)
     table.insert(args, config.options.defaults.project)
   end
 
-  M.exec(args, function(stdout, stderr, code)
+  local cache_key = "sprint_issues:" .. join_cmd(args)
+  exec_cached(cache_key, args, cache_ttl_ms("sprint_issues", 5000), function(stdout, stderr, code)
     if code ~= 0 then
       vim.notify("Error fetching sprint issues: " .. (stderr or ""), vim.log.levels.ERROR)
       callback({})
@@ -174,7 +253,8 @@ function M.get_backlog_issues(callback)
     table.insert(args, config.options.defaults.project)
   end
 
-  M.exec(args, function(stdout, stderr, code)
+  local cache_key = "backlog_issues:" .. join_cmd(args)
+  exec_cached(cache_key, args, cache_ttl_ms("backlog_issues", 5000), function(stdout, stderr, code)
     if code ~= 0 then
       vim.notify("Error fetching backlog issues: " .. (stderr or ""), vim.log.levels.ERROR)
       callback({})
@@ -188,7 +268,9 @@ end
 ---@param key string
 ---@param callback function(issue)
 function M.get_issue(key, callback)
-  M.exec({ "issue", "view", key, "--raw" }, function(stdout, stderr, code)
+  local args = { "issue", "view", key, "--raw" }
+  local cache_key = "issue:" .. key
+  exec_cached(cache_key, args, cache_ttl_ms("issue", 15000), function(stdout, stderr, code)
     if code ~= 0 then
       vim.notify("Error fetching issue: " .. (stderr or ""), vim.log.levels.ERROR)
       callback(nil)
@@ -222,7 +304,8 @@ function M.get_epics(callback)
   local columns = epic_cfg.columns or { "key", "summary" }
   vim.list_extend(args, { "--csv", "--columns", table.concat(columns, ",") })
 
-  M.exec(args, function(stdout, stderr, code)
+  local cache_key = "epics:" .. join_cmd(args)
+  exec_cached(cache_key, args, cache_ttl_ms("epics", 30000), function(stdout, stderr, code)
     if code ~= 0 then
       vim.notify("Error fetching epics: " .. (stderr or ""), vim.log.levels.ERROR)
       callback({})

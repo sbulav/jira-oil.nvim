@@ -110,15 +110,13 @@ function M.compute_diff(buf)
     end
   end
 
-  local drafts = scratch.get_all_drafts()
-
   for _, item in ipairs(current) do
     if item.is_new then
       table.insert(mutations, { type = "CREATE", item = item })
     else
       local orig = original_by_key[item.key]
       if orig then
-        local draft = drafts[item.key]
+        local draft = scratch.peek_draft(item.key)
         local draft_parsed = draft and draft.parsed or nil
 
         local eff_status = item.status
@@ -161,7 +159,8 @@ function M.compute_diff(buf)
   end
 
   -- Include scratch-only drafts even if the issue is untouched in the list view.
-  for key, draft in pairs(drafts) do
+  for _, key in ipairs(scratch.get_draft_keys()) do
+    local draft = scratch.peek_draft(key)
     if current_by_key[key] and original_by_key[key] then
       local already = false
       for _, m in ipairs(mutations) do
@@ -306,6 +305,7 @@ function M.execute_mutations(buf, mutations)
   local function check_done()
     done = done + 1
     if done >= total then
+      cli.clear_cache("all")
       if not has_errors then
         vim.notify("All changes applied successfully!", vim.log.levels.INFO)
       else
