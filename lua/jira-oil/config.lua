@@ -86,6 +86,8 @@ local default_config = {
     issue_type = "Task",
     status = "Open",
   },
+  epic_field = "customfield_12311",
+  epic_clear_value = "null",
   create = {
     available_components = {},
   },

@@ -7,6 +7,13 @@ local M = {}
 
 M.cache = {}
 
+local function extract_epic_key(value)
+  if not value or value == "" then
+    return ""
+  end
+  return value:match("([A-Z0-9]+%-%d+)") or ""
+end
+
 local function render_issue(buf, key, issue, is_new)
   if not vim.api.nvim_buf_is_valid(buf) then return end
 
@@ -17,7 +24,13 @@ local function render_issue(buf, key, issue, is_new)
     if issue.fields.parent.fields and issue.fields.parent.fields.summary then
       epic = epic .. ": " .. issue.fields.parent.fields.summary
     end
+  elseif issue.fields and config.options.epic_field and config.options.epic_field ~= "" then
+    local raw = issue.fields[config.options.epic_field]
+    if type(raw) == "string" and raw ~= "" then
+      epic = raw
+    end
   end
+  local epic_key = extract_epic_key(epic)
 
   local components = ""
   if issue.fields and issue.fields.components and type(issue.fields.components) == "table" then
@@ -73,6 +86,7 @@ local function render_issue(buf, key, issue, is_new)
     key = key,
     is_new = is_new,
     original = issue,
+    epic_key = epic_key,
   }
 
   local old_undolevels = vim.bo[buf].undolevels
@@ -202,6 +216,7 @@ function M.open(buf, uri)
   vim.bo[buf].buftype = "acwrite"
   vim.bo[buf].filetype = "markdown"
   vim.bo[buf].bufhidden = "hide"
+  vim.bo[buf].swapfile = false
   vim.b[buf].jira_oil_kind = "issue"
 
   if not vim.b[buf].jira_oil_keymap_autocmd then
@@ -351,12 +366,51 @@ function M.save(buf)
       end
     end
 
+    local function do_epic()
+      local desired = extract_epic_key(parsed.fields.epic or "")
+      local current = data.epic_key or ""
+      if desired == current then
+        return
+      end
+
+      local function mark_ok()
+        data.epic_key = desired
+      end
+
+      local function do_add()
+        if desired == "" then
+          mark_ok()
+          return
+        end
+        cli.exec({ "epic", "add", desired, data.key }, function(_, stderr, code)
+          if code ~= 0 then
+            vim.notify("Failed to add epic: " .. (stderr or ""), vim.log.levels.ERROR)
+            return
+          end
+          mark_ok()
+        end)
+      end
+
+      if current ~= "" then
+        cli.exec({ "epic", "remove", data.key }, function(_, stderr, code)
+          if code ~= 0 then
+            vim.notify("Failed to remove epic: " .. (stderr or ""), vim.log.levels.ERROR)
+            return
+          end
+          do_add()
+        end)
+      else
+        do_add()
+      end
+    end
+
     cli.exec(args, function(stdout, stderr, code)
       if code ~= 0 then
         vim.notify("Failed to update issue: " .. (stderr or ""), vim.log.levels.ERROR)
       else
         do_assign()
         do_status()
+        do_epic()
         vim.notify("Issue updated successfully!", vim.log.levels.INFO)
         vim.bo[buf].modified = false
       end
