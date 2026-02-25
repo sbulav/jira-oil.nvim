@@ -572,11 +572,12 @@ function M.save(buf)
     local proj = parsed.fields.project
     if proj and proj ~= "" then table.insert(args, "-p"); table.insert(args, proj) end
     if parsed.fields.assignee and parsed.fields.assignee ~= "Unassigned" and parsed.fields.assignee ~= "" then
-      local assignee = parsed.fields.assignee
+      local src_assignee = data.original and data.original.fields and data.original.fields.assignee or nil
+      local assignee = util.resolve_assignee_for_cli(parsed.fields.assignee, src_assignee)
       if assignee == "me" and vim.env.JIRA_USER and vim.env.JIRA_USER ~= "" then
         assignee = vim.env.JIRA_USER
       end
-      if assignee ~= "me" and assignee ~= "" then
+      if assignee and assignee ~= "me" and assignee ~= "" then
         table.insert(args, "-a")
         table.insert(args, assignee)
       end
@@ -609,7 +610,7 @@ function M.save(buf)
       if code ~= 0 then
         vim.notify("Failed to create issue: " .. (stderr or ""), vim.log.levels.ERROR)
       else
-        local created_key = util.extract_issue_key(stdout or "")
+        local created_key = util.extract_issue_key((stdout or "") .. "\n" .. (stderr or ""))
         if created_key and created_key ~= "" then
           data.key = created_key
           data.is_new = false

@@ -223,6 +223,14 @@ function M.execute_mutations(buf, mutations)
   local total = #mutations
   local done = 0
   local has_errors = false
+  local has_create = false
+
+  for _, m in ipairs(mutations) do
+    if m.type == "CREATE" then
+      has_create = true
+      break
+    end
+  end
 
   local function check_done()
     done = done + 1
@@ -237,6 +245,13 @@ function M.execute_mutations(buf, mutations)
         vim.bo[buf].modified = false
       end
       view.refresh(buf)
+      if has_create then
+        vim.defer_fn(function()
+          if vim.api.nvim_buf_is_valid(buf) then
+            view.refresh(buf)
+          end
+        end, 1200)
+      end
     end
   end
 
@@ -267,11 +282,12 @@ function M.execute_mutations(buf, mutations)
         table.insert(args, project)
       end
 
-      local assignee = item.assignee
-      if assignee == "" and fields and fields.assignee then
-        assignee = fields.assignee.displayName or fields.assignee.name or ""
+      local assignee_input = item.assignee
+      if assignee_input == "" and fields and fields.assignee then
+        assignee_input = fields.assignee.displayName or fields.assignee.name or ""
       end
-      if assignee ~= "" and assignee ~= "Unassigned" then
+      local assignee = util.resolve_assignee_for_cli(assignee_input, fields and fields.assignee or nil)
+      if assignee and assignee ~= "" then
         table.insert(args, "-a")
         table.insert(args, assignee)
       end
@@ -311,8 +327,8 @@ function M.execute_mutations(buf, mutations)
       return args
     end
 
-    local function after_create_success(item, stdout)
-      local key = util.extract_issue_key(stdout)
+    local function after_create_success(item, stdout, stderr)
+      local key = util.extract_issue_key((stdout or "") .. "\n" .. (stderr or ""))
       if key and item.row ~= nil then
         view.set_line_key(buf, item.row, key)
         view.clear_copy_source_at_line(buf, item.row)
@@ -343,7 +359,7 @@ function M.execute_mutations(buf, mutations)
               check_done()
               return
             end
-            after_create_success(m.item, stdout)
+            after_create_success(m.item, stdout, stderr)
           end)
         end
 
