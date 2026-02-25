@@ -6,11 +6,12 @@ local M = {}
 M.select = {
   desc = "Open Jira issue",
   callback = function()
-    local parser = require("jira-oil.parser")
-    local line = vim.api.nvim_get_current_line()
-    local parsed = parser.parse_line(line)
-    if parsed and parsed.key and parsed.key ~= "" then
-      vim.cmd.edit("jira-oil://issue/" .. parsed.key)
+    local view = require("jira-oil.view")
+    local buf = vim.api.nvim_get_current_buf()
+    local row = vim.api.nvim_win_get_cursor(0)[1] - 1 -- 0-indexed
+    local key = view.get_key_at_line(buf, row)
+    if key and key ~= "" then
+      vim.cmd.edit("jira-oil://issue/" .. key)
     end
   end,
 }

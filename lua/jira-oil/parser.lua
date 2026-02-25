@@ -3,22 +3,28 @@ local util = require("jira-oil.util")
 
 local M = {}
 
----Format a Jira issue as a string for the list buffer
+---Format a Jira issue as a string for the list buffer.
+---The issue key is NOT included -- it is rendered as inline virtual text
+---by view.lua.  Only the editable columns defined in config.view.columns
+---appear here, separated by " │ ".
 ---@param issue table Raw issue from CLI
 ---@return string formatted_line
 function M.format_line(issue)
   local cols = config.options.view.columns
+  local status_icons = config.options.view.status_icons
   local parts = {}
 
   for _, col in ipairs(cols) do
     local val = ""
-    if col.name == "key" then
-      val = issue.key or ""
-    elseif col.name == "status" then
-      val = issue.fields and issue.fields.status and issue.fields.status.name or ""
+    if col.name == "status" then
+      local name = issue.fields and issue.fields.status and issue.fields.status.name or ""
+      local icon = util.get_icon(status_icons, name)
+      val = icon .. name
     elseif col.name == "type" then
       local itype = issue.fields and (issue.fields.issuetype or issue.fields.issueType)
-      val = itype and itype.name or ""
+      local name = itype and itype.name or ""
+      local icon = util.get_icon(config.options.view.type_icons, name)
+      val = icon .. name
     elseif col.name == "assignee" then
       if issue.fields and issue.fields.assignee then
         val = issue.fields.assignee.displayName or issue.fields.assignee.name or "Unassigned"
@@ -27,6 +33,9 @@ function M.format_line(issue)
       end
     elseif col.name == "summary" then
       val = issue.fields and issue.fields.summary or ""
+    elseif col.name == "key" then
+      -- Kept for backwards compat if someone adds key back into columns
+      val = issue.key or ""
     end
 
     if col.width then
@@ -39,7 +48,9 @@ function M.format_line(issue)
   return table.concat(parts, " │ ")
 end
 
----Parse a string from the list buffer into structured data
+---Parse a line from the list buffer into structured data.
+---The issue key is NOT extracted from the text -- it comes from extmark
+---identity tracking in the mutator / view layer.
 ---@param line string
 ---@return table|nil parsed_issue
 function M.parse_line(line)
@@ -51,45 +62,28 @@ function M.parse_line(line)
   local parts = vim.split(line, "│", { trimempty = false })
 
   local parsed = {}
-  local is_new = true
 
   for i, col in ipairs(cols) do
     local val = parts[i] and util.trim(parts[i]) or ""
-    if col.name == "key" then
-      parsed.key = val
-      if val:match("^[A-Z][A-Z0-9]*%-[0-9]+$") then
-        is_new = false
-      end
-    elseif col.name == "status" then
-      parsed.status = val
+    if col.name == "status" then
+      -- Strip leading icon character before storing
+      parsed.status = util.strip_icon(val)
     elseif col.name == "type" then
-      parsed.type = val
+      parsed.type = util.strip_icon(val)
     elseif col.name == "assignee" then
       parsed.assignee = val
     elseif col.name == "summary" then
-      -- If summary is the last column, we might have merged extra parts if summary contained '│'
+      -- If summary is the last column, rejoin any extra parts
+      -- (summary text might contain │)
       if i == #cols then
         val = table.concat(parts, " │ ", i)
         parsed.summary = util.trim(val)
       else
         parsed.summary = val
       end
-    end
-  end
-
-  -- If no key, it's a new issue to create
-  if is_new then
-    parsed.is_new = true
-    -- Assign defaults if not set
-    if parsed.type == "" then parsed.type = config.options.defaults.issue_type end
-    if parsed.assignee == "" then parsed.assignee = config.options.defaults.assignee end
-    if parsed.status == "" then parsed.status = "To Do" end
-    -- The summary might be typed in the first column by mistake, let's fix that
-    if parsed.key and parsed.key ~= "" and not parsed.key:match("^[A-Z][A-Z0-9]*%-[0-9]+$") then
-      if parsed.summary == "" then
-        parsed.summary = parsed.key
-        parsed.key = ""
-      end
+    elseif col.name == "key" then
+      -- Backwards compat: if key is in columns, parse it
+      parsed.key = val
     end
   end
 

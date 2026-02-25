@@ -27,4 +27,24 @@ function M.trim(s)
   return (s:gsub("^%s*(.-)%s*$", "%1"))
 end
 
+---Look up an icon from a configurable map with a "default" fallback
+---@param icon_map table<string, string>
+---@param name string
+---@return string
+function M.get_icon(icon_map, name)
+  if not icon_map then return "" end
+  return icon_map[name] or icon_map["default"] or ""
+end
+
+---Strip a leading icon prefix (non-ASCII char + space) from a value.
+---Tolerant: returns the original string if no icon is present.
+---@param text string
+---@return string
+function M.strip_icon(text)
+  -- Icons are a single multi-byte character followed by a space.
+  -- Match any character outside printable ASCII (0x20-0x7E) at the start.
+  local stripped = text:gsub("^[^\032-\126]+ ", "")
+  return stripped
+end
+
 return M

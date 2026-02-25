@@ -4,7 +4,9 @@ local config = require("jira-oil.config")
 
 local M = {}
 
----Diff buffer lines with original to compute mutations
+---Diff buffer lines with original to compute mutations.
+---Issue identity is resolved via inline virtual-text extmarks placed by
+---view.lua, NOT by parsing the key from buffer text.
 ---@param buf number
 ---@return table[]
 function M.compute_diff(buf)
@@ -22,10 +24,13 @@ function M.compute_diff(buf)
     return data.target == "all" and line == view.separator
   end
 
+  -- Build a row -> key mapping from extmarks (survives line moves)
+  local row_to_key = view.get_all_line_keys(buf)
+
   -- Track which keys we've already seen to handle duplicates
   local seen_keys = {}
 
-  for _, line in ipairs(lines) do
+  for lnum, line in ipairs(lines) do
     if line:match("%S") then
       if is_separator(line) then
         current_section = "backlog"
@@ -33,15 +38,31 @@ function M.compute_diff(buf)
         local parsed = parser.parse_line(line)
         if parsed then
           parsed.section = current_section
-          -- Skip duplicate keys -- only the first occurrence counts
-          if not parsed.is_new and parsed.key and parsed.key ~= "" then
-            if seen_keys[parsed.key] then
-              vim.notify("Duplicate key " .. parsed.key .. " ignored.", vim.log.levels.WARN)
+
+          -- Resolve identity from extmark, not from buffer text
+          local key = row_to_key[lnum - 1] -- 0-indexed
+          if key then
+            parsed.key = key
+            parsed.is_new = false
+            -- Skip duplicate keys -- only the first occurrence counts
+            if seen_keys[key] then
+              vim.notify("Duplicate key " .. key .. " ignored.", vim.log.levels.WARN)
             else
-              seen_keys[parsed.key] = true
+              seen_keys[key] = true
               table.insert(current, parsed)
             end
           else
+            parsed.is_new = true
+            -- Assign defaults for new issues
+            if not parsed.type or parsed.type == "" then
+              parsed.type = config.options.defaults.issue_type
+            end
+            if not parsed.assignee or parsed.assignee == "" then
+              parsed.assignee = config.options.defaults.assignee
+            end
+            if not parsed.status or parsed.status == "" then
+              parsed.status = "To Do"
+            end
             table.insert(current, parsed)
           end
         end
@@ -205,9 +226,6 @@ function M.execute_mutations(buf, mutations)
           if code ~= 0 then
             vim.notify("Failed to create issue: " .. (stderr or ""), vim.log.levels.ERROR)
             has_errors = true
-          else
-            -- If we created a task in the SPRINT view, we might need to add it to sprint?
-            -- Since the requirement says "creating tasks should be put in the backlog", we do nothing.
           end
           check_done()
         end)
@@ -285,7 +303,6 @@ function M.execute_mutations(buf, mutations)
             check_done()
           end
         elseif m.dest == "BACKLOG" then
-          -- We cannot directly remove from sprint. We could use `jira issue move` or ignore it.
           vim.notify("Moving to Backlog (removing from Sprint) via jira-cli is not supported yet.", vim.log.levels.WARN)
           check_done()
         end

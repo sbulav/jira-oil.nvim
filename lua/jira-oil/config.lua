@@ -27,12 +27,15 @@ local default_config = {
     },
   },
   view = {
+    -- Editable columns rendered as inline buffer text.  The issue key is
+    -- always rendered as read-only inline virtual text and is NOT listed here.
     columns = {
-      { name = "key", width = 12 },
       { name = "status", width = 15 },
       { name = "assignee", width = 15 },
       { name = "summary" },
     },
+    -- Display width reserved for the virtual-text key column (characters)
+    key_width = 12,
     default_sort = "key",
     column_highlights = {
       key = "JiraOilKey",
@@ -49,7 +52,37 @@ local default_config = {
       ["Closed"] = "JiraOilStatusDone",
       ["Blocked"] = "JiraOilStatusBlocked",
     },
+    -- Nerd Font icons prepended to the status column text (configurable)
+    status_icons = {
+      ["Open"]        = " ",
+      ["To Do"]       = " ",
+      ["In Progress"] = " ",
+      ["In Review"]   = " ",
+      ["Done"]        = " ",
+      ["Closed"]      = " ",
+      ["Blocked"]     = " ",
+      default         = " ",
+    },
+    -- Nerd Font icons for issue types
+    type_icons = {
+      Task         = " ",
+      Story        = " ",
+      Epic         = " ",
+      ["Sub-task"] = " ",
+      Bug          = " ",
+      Improvement  = " ",
+      Feature      = " ",
+      default      = " ",
+    },
+    -- Section header configuration for the "all" (sprint + backlog) view
+    sections = {
+      show_count    = true,
+      sprint_label  = "Sprint",
+      backlog_label = "Backlog",
+    },
     separator_highlight = "JiraOilSeparator",
+    -- Show project / filter context in the winbar
+    show_winbar = true,
   },
   -- Keymaps in jira-oil list buffers. Can be any value that `vim.keymap.set` accepts OR a table of
   -- keymap options with a `callback` (e.g. { callback = function() ... end, desc = "", mode = "n" })
