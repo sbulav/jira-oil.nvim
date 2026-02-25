@@ -112,6 +112,24 @@ local default_config = {
   use_default_keymaps = true,
   keymaps_help = {
     border = nil,
+    show_title = true,
+    show_footer = true,
+    key_width = 18,
+    separator = " \u{2502} ",
+    icons = {
+      n = "\u{f489}", -- nf-md-cursor_default
+      i = "\u{f040}", -- nf-fa-pencil
+      v = "\u{f245}", -- nf-fa-mouse_pointer
+      x = "\u{f245}", -- nf-fa-mouse_pointer
+      s = "\u{f245}", -- nf-fa-mouse_pointer
+      o = "\u{f12e}", -- nf-fa-puzzle_piece
+      c = "\u{f120}", -- nf-fa-terminal
+      t = "\u{f120}", -- nf-fa-terminal
+      default = "\u{f128}", -- nf-fa-question
+    },
+    max_width_ratio = 0.9,
+    max_height_ratio = 0.8,
+    zindex = 150,
   },
   -- Use ENV by default or override
   defaults = {

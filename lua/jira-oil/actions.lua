@@ -84,11 +84,12 @@ M.show_help = {
   callback = function()
     local keymap_util = require("jira-oil.keymap_util")
     local buf = vim.api.nvim_get_current_buf()
+    local kind = vim.b[buf].jira_oil_kind == "issue" and "Issue" or "List"
     local keymaps = config.options.keymaps
     if vim.b[buf].jira_oil_kind == "issue" then
       keymaps = config.options.keymaps_issue
     end
-    keymap_util.show_help(keymaps)
+    keymap_util.show_help(keymaps, { context = kind })
   end,
 }
 
