@@ -10,6 +10,50 @@ function M.setup(opts)
 
   -- Register autocommands for the virtual filesystem
   local group = vim.api.nvim_create_augroup("JiraOil", { clear = true })
+  local draft_capture_seq = {}
+  local list_decorate_seq = {}
+
+  ---@param buf number
+  local function capture_draft_debounced(buf)
+    if not vim.api.nvim_buf_is_valid(buf) then
+      return
+    end
+    draft_capture_seq[buf] = (draft_capture_seq[buf] or 0) + 1
+    local seq = draft_capture_seq[buf]
+    vim.defer_fn(function()
+      if draft_capture_seq[buf] ~= seq then
+        return
+      end
+      if not vim.api.nvim_buf_is_valid(buf) then
+        return
+      end
+      if vim.b[buf].jira_oil_kind ~= "issue" then
+        return
+      end
+      scratch.capture_draft(buf)
+    end, 150)
+  end
+
+  ---@param buf number
+  local function decorate_list_debounced(buf)
+    if not vim.api.nvim_buf_is_valid(buf) then
+      return
+    end
+    list_decorate_seq[buf] = (list_decorate_seq[buf] or 0) + 1
+    local seq = list_decorate_seq[buf]
+    vim.defer_fn(function()
+      if list_decorate_seq[buf] ~= seq then
+        return
+      end
+      if not vim.api.nvim_buf_is_valid(buf) then
+        return
+      end
+      if vim.b[buf].jira_oil_kind ~= "list" then
+        return
+      end
+      view.decorate_current(buf)
+    end, 80)
+  end
 
   vim.api.nvim_create_autocmd("BufReadCmd", {
     group = group,
@@ -44,6 +88,21 @@ function M.setup(opts)
     callback = function(args)
       view.cache[args.buf] = nil
       scratch.cache[args.buf] = nil
+      draft_capture_seq[args.buf] = nil
+      list_decorate_seq[args.buf] = nil
+    end,
+  })
+
+  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+    group = group,
+    pattern = "jira-oil://*",
+    callback = function(args)
+      local kind = vim.b[args.buf].jira_oil_kind
+      if kind == "issue" then
+        capture_draft_debounced(args.buf)
+      elseif kind == "list" then
+        decorate_list_debounced(args.buf)
+      end
     end,
   })
 

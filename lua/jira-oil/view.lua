@@ -134,7 +134,8 @@ end
 ---@param sprint_count number
 ---@param backlog_count number
 ---@param target string
-local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, target)
+---@param draft_keys table<string, boolean>|nil
+local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, target, draft_keys)
   local scratch = require("jira-oil.scratch")
 
   vim.api.nvim_buf_clear_namespace(buf, M.ns, 0, -1)
@@ -178,7 +179,7 @@ local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_c
           right_gravity = false,
         })
 
-        if scratch.get_draft(key) then
+        if (draft_keys and draft_keys[key]) or scratch.get_draft(key) then
           vim.api.nvim_buf_set_extmark(buf, M.ns, row, 0, {
             virt_text = { { " [draft]", "JiraOilDraft" } },
             virt_text_pos = "eol",
@@ -467,9 +468,18 @@ function M.decorate_current(buf)
     return
   end
 
+  local scratch = require("jira-oil.scratch")
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
   local row_to_key = M.get_all_line_keys(buf)
   local issue_keys = {}
+  local draft_keys = {}
+  local original_by_key = {}
+  for _, item in ipairs(data.original or {}) do
+    if item and item.key and item.key ~= "" then
+      original_by_key[item.key] = item
+    end
+  end
+
   local sprint_count, backlog_count = 0, 0
   local in_backlog = data.target == "backlog"
 
@@ -480,8 +490,41 @@ function M.decorate_current(buf)
     elseif line == M.header_sprint then
       in_backlog = false
     else
-      issue_keys[i] = row_to_key[row]
+      local key = row_to_key[row]
+      issue_keys[i] = key
       if line:match("%S") then
+        if key and key ~= "" then
+          if scratch.get_draft(key) then
+            draft_keys[key] = true
+          else
+            local parsed = parser.parse_line(line)
+            local orig = original_by_key[key]
+            if (not parsed) or (not orig) then
+              draft_keys[key] = true
+            else
+              local current_section = in_backlog and "backlog" or "sprint"
+              local changed = false
+              if current_section ~= (orig.section or current_section) then
+                changed = true
+              end
+              if parsed.status ~= nil and parsed.status ~= (orig.status or "") then
+                changed = true
+              end
+              if parsed.assignee ~= nil and parsed.assignee ~= (orig.assignee or "") then
+                changed = true
+              end
+              if parsed.summary ~= nil and parsed.summary ~= (orig.summary or "") then
+                changed = true
+              end
+              if parsed.type ~= nil and parsed.type ~= (orig.type or "") then
+                changed = true
+              end
+              if changed then
+                draft_keys[key] = true
+              end
+            end
+          end
+        end
         if in_backlog then
           backlog_count = backlog_count + 1
         else
@@ -491,7 +534,7 @@ function M.decorate_current(buf)
     end
   end
 
-  apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, data.target)
+  apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, data.target, draft_keys)
 end
 
 ---@param buf number
@@ -552,7 +595,7 @@ function M.open(buf, uri)
     vim.bo[buf].modified = false
     vim.bo[buf].undolevels = old_undolevels
 
-    apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, target)
+    apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, target, nil)
     actions.setup(buf)
   end
 
@@ -643,7 +686,7 @@ function M.reset(buf)
     end
   end
 
-  apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, data.target)
+  apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, data.target, nil)
 end
 
 return M
