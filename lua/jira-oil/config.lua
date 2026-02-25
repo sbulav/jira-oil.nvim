@@ -52,27 +52,28 @@ local default_config = {
       ["Closed"] = "JiraOilStatusDone",
       ["Blocked"] = "JiraOilStatusBlocked",
     },
-    -- Nerd Font icons prepended to the status column text (configurable)
+    -- Nerd Font icons prepended to the status column text (configurable).
+    -- Uses Unicode escapes so the file is portable across editors.
     status_icons = {
-      ["Open"]        = " ",
-      ["To Do"]       = " ",
-      ["In Progress"] = " ",
-      ["In Review"]   = " ",
-      ["Done"]        = " ",
-      ["Closed"]      = " ",
-      ["Blocked"]     = " ",
-      default         = " ",
+      ["Open"]        = "\u{f10c} ",  -- nf-fa-circle_o
+      ["To Do"]       = "\u{f10c} ",  -- nf-fa-circle_o
+      ["In Progress"] = "\u{f144} ",  -- nf-fa-play_circle
+      ["In Review"]   = "\u{f06e} ",  -- nf-fa-eye
+      ["Done"]        = "\u{f058} ",  -- nf-fa-check_circle
+      ["Closed"]      = "\u{f058} ",  -- nf-fa-check_circle
+      ["Blocked"]     = "\u{f05e} ",  -- nf-fa-ban
+      default         = "\u{f111} ",  -- nf-fa-circle
     },
     -- Nerd Font icons for issue types
     type_icons = {
-      Task         = " ",
-      Story        = " ",
-      Epic         = " ",
-      ["Sub-task"] = " ",
-      Bug          = " ",
-      Improvement  = " ",
-      Feature      = " ",
-      default      = " ",
+      Task         = "\u{f0ae} ",  -- nf-fa-tasks
+      Story        = "\u{f02d} ",  -- nf-fa-book
+      Epic         = "\u{f0e7} ",  -- nf-fa-bolt
+      ["Sub-task"] = "\u{f0ae} ",  -- nf-fa-tasks
+      Bug          = "\u{f188} ",  -- nf-fa-bug
+      Improvement  = "\u{f0d0} ",  -- nf-fa-magic
+      Feature      = "\u{f0eb} ",  -- nf-fa-lightbulb_o
+      default      = "\u{f016} ",  -- nf-fa-file_o
     },
     -- Section header configuration for the "all" (sprint + backlog) view
     sections = {

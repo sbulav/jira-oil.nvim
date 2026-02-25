@@ -76,7 +76,8 @@ function M.parse_line(line)
       -- If summary is the last column, rejoin any extra parts
       -- (summary text might contain │)
       if i == #cols then
-        val = table.concat(parts, " │ ", i)
+        -- Rejoin with the same delimiter we split on so spacing is preserved
+        val = table.concat(parts, "│", i)
         parsed.summary = util.trim(val)
       else
         parsed.summary = val
