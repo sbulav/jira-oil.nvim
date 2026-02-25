@@ -22,6 +22,9 @@ function M.compute_diff(buf)
     return data.target == "all" and line == view.separator
   end
 
+  -- Track which keys we've already seen to handle duplicates
+  local seen_keys = {}
+
   for _, line in ipairs(lines) do
     if line:match("%S") then
       if is_separator(line) then
@@ -30,24 +33,40 @@ function M.compute_diff(buf)
         local parsed = parser.parse_line(line)
         if parsed then
           parsed.section = current_section
-          table.insert(current, parsed)
+          -- Skip duplicate keys -- only the first occurrence counts
+          if not parsed.is_new and parsed.key and parsed.key ~= "" then
+            if seen_keys[parsed.key] then
+              vim.notify("Duplicate key " .. parsed.key .. " ignored.", vim.log.levels.WARN)
+            else
+              seen_keys[parsed.key] = true
+              table.insert(current, parsed)
+            end
+          else
+            table.insert(current, parsed)
+          end
         end
       end
     end
   end
 
-  local function find_original(key)
-    for _, item in ipairs(original) do
-      if item.key == key then return item end
+  -- Build lookup table for O(1) access
+  local original_by_key = {}
+  for _, item in ipairs(original) do
+    original_by_key[item.key] = item
+  end
+
+  local current_by_key = {}
+  for _, item in ipairs(current) do
+    if not item.is_new and item.key and item.key ~= "" then
+      current_by_key[item.key] = item
     end
-    return nil
   end
 
   for _, item in ipairs(current) do
     if item.is_new then
       table.insert(mutations, { type = "CREATE", item = item })
     else
-      local orig = find_original(item.key)
+      local orig = original_by_key[item.key]
       if orig then
         local updates = {}
         if orig.section and item.section and orig.section ~= item.section then
@@ -64,15 +83,8 @@ function M.compute_diff(buf)
     end
   end
 
-  local function find_current(key)
-    for _, item in ipairs(current) do
-      if item.key == key then return item end
-    end
-    return nil
-  end
-
   for _, item in ipairs(original) do
-    if not find_current(item.key) then
+    if not current_by_key[item.key] then
       local from_section = item.section or data.target
       local dest = from_section == "sprint" and "BACKLOG" or "SPRINT"
       table.insert(mutations, { type = "MOVE", key = item.key, dest = dest })
@@ -170,6 +182,12 @@ function M.execute_mutations(buf, mutations)
     if done >= total then
       if not has_errors then
         vim.notify("All changes applied successfully!", vim.log.levels.INFO)
+      else
+        vim.notify("Some changes failed. Check messages above.", vim.log.levels.WARN)
+      end
+      -- Always reset modified and refresh, even on partial failure
+      if vim.api.nvim_buf_is_valid(buf) then
+        vim.bo[buf].modified = false
       end
       view.refresh(buf)
     end
@@ -195,64 +213,61 @@ function M.execute_mutations(buf, mutations)
         end)
       elseif m.type == "UPDATE" then
         local summary_changed = false
-        local args = { "issue", "edit", m.key, "--no-input" }
+        local assignee_changed = false
+        local status_changed = false
         for _, update in ipairs(m.updates) do
-          if update:match("^summary:") then
-            table.insert(args, "-s")
-            table.insert(args, m.item.summary)
-            summary_changed = true
-          end
+          if update:match("^summary:") then summary_changed = true end
+          if update:match("^assignee:") then assignee_changed = true end
+          if update:match("^status:") then status_changed = true end
         end
 
-        local function do_assign_and_status()
-          local assignee_changed = false
-          for _, update in ipairs(m.updates) do
-            if update:match("^assignee:") then assignee_changed = true end
+        -- Build sequential chain: summary -> assignee -> status
+        -- Short-circuit on error to avoid inconsistent state
+        local function do_status(skip_on_error)
+          if skip_on_error or not status_changed then
+            check_done()
+            return
           end
-          
-          local function do_status()
-            local status_changed = false
-            for _, update in ipairs(m.updates) do
-              if update:match("^status:") then status_changed = true end
+          cli.exec({ "issue", "move", m.key, m.item.status }, function(_, stderr, code)
+            if code ~= 0 then
+              vim.notify("Failed to update status " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              has_errors = true
             end
-            if status_changed then
-              cli.exec({ "issue", "move", m.key, m.item.status }, function(s3, e3, c3)
-                if c3 ~= 0 then
-                  vim.notify("Failed to update status " .. m.key .. ": " .. (e3 or ""), vim.log.levels.ERROR)
-                  has_errors = true
-                end
-                check_done()
-              end)
-            else
-              check_done()
-            end
-          end
+            check_done()
+          end)
+        end
 
-          if assignee_changed then
-            local assignee = m.item.assignee
-            if assignee == "Unassigned" then assignee = "x" end
-            cli.exec({ "issue", "assign", m.key, assignee }, function(s2, e2, c2)
-              if c2 ~= 0 then
-                vim.notify("Failed to update assignee " .. m.key .. ": " .. (e2 or ""), vim.log.levels.ERROR)
-                has_errors = true
-              end
-              do_status()
-            end)
-          else
-            do_status()
+        local function do_assign(skip_on_error)
+          if skip_on_error or not assignee_changed then
+            do_status(skip_on_error)
+            return
           end
+          local assignee = m.item.assignee
+          if assignee == "Unassigned" then assignee = "x" end
+          cli.exec({ "issue", "assign", m.key, assignee }, function(_, stderr, code)
+            if code ~= 0 then
+              vim.notify("Failed to update assignee " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              has_errors = true
+              do_status(true)
+            else
+              do_status(false)
+            end
+          end)
         end
 
         if summary_changed then
-          cli.exec(args, function(stdout, stderr, code)
+          local args = { "issue", "edit", m.key, "--no-input", "-s", m.item.summary }
+          cli.exec(args, function(_, stderr, code)
             if code ~= 0 then
               vim.notify("Failed to update summary " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
               has_errors = true
+              do_assign(true)
+            else
+              do_assign(false)
             end
-            do_assign_and_status()
           end)
         else
-          do_assign_and_status()
+          do_assign(false)
         end
       elseif m.type == "MOVE" then
         if m.dest == "SPRINT" then

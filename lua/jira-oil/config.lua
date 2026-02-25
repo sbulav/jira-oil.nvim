@@ -99,20 +99,39 @@ M.options = default_config
 
 function M.setup(opts)
   opts = opts or {}
-  local new_conf = vim.tbl_deep_extend("keep", opts, default_config)
+
+  -- Merge keymaps separately since tbl_deep_extend cannot handle `false` values
+  -- (used to disable individual default keymaps)
+  local user_keymaps = opts.keymaps
+  local user_keymaps_issue = opts.keymaps_issue
+  opts.keymaps = nil
+  opts.keymaps_issue = nil
+
+  local new_conf = vim.tbl_deep_extend("force", vim.deepcopy(default_config), opts)
 
   if not new_conf.use_default_keymaps then
-    new_conf.keymaps = opts.keymaps or {}
-    new_conf.keymaps_issue = opts.keymaps_issue or {}
+    new_conf.keymaps = user_keymaps or {}
+    new_conf.keymaps_issue = user_keymaps_issue or {}
   else
-    if opts.keymaps then
-      for k, v in pairs(opts.keymaps) do
-        new_conf.keymaps[k] = v
+    -- Start with defaults, then apply user overrides (including `false` to disable)
+    new_conf.keymaps = vim.deepcopy(default_config.keymaps)
+    new_conf.keymaps_issue = vim.deepcopy(default_config.keymaps_issue)
+    if user_keymaps then
+      for k, v in pairs(user_keymaps) do
+        if v == false then
+          new_conf.keymaps[k] = nil
+        else
+          new_conf.keymaps[k] = v
+        end
       end
     end
-    if opts.keymaps_issue then
-      for k, v in pairs(opts.keymaps_issue) do
-        new_conf.keymaps_issue[k] = v
+    if user_keymaps_issue then
+      for k, v in pairs(user_keymaps_issue) do
+        if v == false then
+          new_conf.keymaps_issue[k] = nil
+        else
+          new_conf.keymaps_issue[k] = v
+        end
       end
     end
   end

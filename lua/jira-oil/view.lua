@@ -10,12 +10,7 @@ M.cache = {}
 M.separator = "----- backlog -----"
 M.ns = vim.api.nvim_create_namespace("JiraOilList")
 
-local function ensure_highlights()
-  if M._highlights_set then
-    return
-  end
-  M._highlights_set = true
-
+local function define_highlights()
   vim.api.nvim_set_hl(0, "JiraOilKey", { link = "Identifier", default = true })
   vim.api.nvim_set_hl(0, "JiraOilStatus", { link = "DiagnosticInfo", default = true })
   vim.api.nvim_set_hl(0, "JiraOilAssignee", { link = "Comment", default = true })
@@ -29,8 +24,14 @@ local function ensure_highlights()
   vim.api.nvim_set_hl(0, "JiraOilStatusBlocked", { link = "DiagnosticError", default = true })
 end
 
+-- Define highlights now and re-apply on colorscheme change
+define_highlights()
+vim.api.nvim_create_autocmd("ColorScheme", {
+  group = vim.api.nvim_create_augroup("JiraOilHighlights", { clear = true }),
+  callback = define_highlights,
+})
+
 local function apply_highlights(buf, lines)
-  ensure_highlights()
   vim.api.nvim_buf_clear_namespace(buf, M.ns, 0, -1)
 
   local columns = config.options.view.columns

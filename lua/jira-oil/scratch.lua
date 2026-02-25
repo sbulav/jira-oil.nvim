@@ -101,8 +101,9 @@ end
 
 local function find_field_line(buf, field)
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local prefix = field .. ":"
   for i, line in ipairs(lines) do
-    if line:match("^" .. field .. ":") then
+    if vim.startswith(line, prefix) then
       return i
     end
   end
@@ -288,6 +289,67 @@ function M.parse_buffer(lines)
   return parsed
 end
 
+---Compute what changed between the original issue and the parsed buffer
+---@param data table Cache entry for this buffer
+---@param parsed table Parsed buffer content
+---@return table changes { summary_changed, assignee_changed, status_changed, epic_changed, new_summary, new_assignee, new_status, new_epic_key }
+local function compute_issue_diff(data, parsed)
+  local orig = data.original or { fields = {} }
+  local changes = {}
+
+  -- Summary
+  local orig_summary = orig.fields and orig.fields.summary or ""
+  changes.summary_changed = parsed.summary ~= orig_summary
+  changes.new_summary = parsed.summary
+
+  -- Assignee
+  local orig_assignee = ""
+  if orig.fields and orig.fields.assignee then
+    orig_assignee = orig.fields.assignee.displayName or orig.fields.assignee.name or ""
+  end
+  if orig_assignee == "" then orig_assignee = "Unassigned" end
+  local new_assignee = parsed.fields.assignee or "Unassigned"
+  changes.assignee_changed = new_assignee ~= orig_assignee
+  changes.new_assignee = new_assignee
+
+  -- Status
+  local orig_status = orig.fields and orig.fields.status and orig.fields.status.name or ""
+  local new_status = parsed.fields.status or ""
+  changes.status_changed = new_status ~= "" and new_status ~= orig_status
+  changes.new_status = new_status
+
+  -- Epic
+  local new_epic_key = extract_epic_key(parsed.fields.epic or "")
+  local orig_epic_key = data.epic_key or ""
+  changes.epic_changed = new_epic_key ~= orig_epic_key
+  changes.new_epic_key = new_epic_key
+  changes.orig_epic_key = orig_epic_key
+
+  return changes
+end
+
+---Execute a sequence of async steps, calling done_cb when all complete
+---@param steps table[] Array of { fn = function(next_cb), desc = string }
+---@param done_cb function(has_errors: boolean)
+local function exec_steps(steps, done_cb)
+  local has_errors = false
+  local idx = 0
+
+  local function run_next()
+    idx = idx + 1
+    if idx > #steps then
+      done_cb(has_errors)
+      return
+    end
+    steps[idx].fn(function(err)
+      if err then has_errors = true end
+      run_next()
+    end)
+  end
+
+  run_next()
+end
+
 ---Save scratch buffer to Jira
 ---@param buf number
 function M.save(buf)
@@ -336,82 +398,135 @@ function M.save(buf)
       end
     end
 
-    -- TODO: Add description if Jira CLI supports it directly via args or body (it supports `--body`? let's check Jira CLI help later)
+    if parsed.description and parsed.description ~= "" then
+      table.insert(args, "--body")
+      table.insert(args, parsed.description)
+    end
 
     cli.exec(args, function(stdout, stderr, code)
       if code ~= 0 then
         vim.notify("Failed to create issue: " .. (stderr or ""), vim.log.levels.ERROR)
       else
         vim.notify("Issue created successfully!", vim.log.levels.INFO)
-        vim.bo[buf].modified = false
-        -- If we parsed the new key, we could rename the buffer, but for now just leave it.
+        if vim.api.nvim_buf_is_valid(buf) then
+          vim.bo[buf].modified = false
+        end
       end
     end)
   else
-    -- Update existing issue
-    local args = { "issue", "edit", data.key, "--no-input" }
-    if parsed.summary ~= "" then table.insert(args, "-s"); table.insert(args, parsed.summary) end
-    -- Assignee change
-    local function do_assign()
-      if parsed.fields.assignee then
-        local assignee = parsed.fields.assignee
-        if assignee == "Unassigned" then assignee = "x" end
-        cli.exec({ "issue", "assign", data.key, assignee, "--no-input" }, function() end)
+    -- Compute diff against original -- only mutate what actually changed
+    local diff = compute_issue_diff(data, parsed)
+
+    local steps = {}
+
+    -- Step 1: Edit summary (only if changed)
+    if diff.summary_changed then
+      table.insert(steps, {
+        desc = "update summary",
+        fn = function(next_cb)
+          local args = { "issue", "edit", data.key, "--no-input", "-s", diff.new_summary }
+          cli.exec(args, function(_, stderr, code)
+            if code ~= 0 then
+              vim.notify("Failed to update summary for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              next_cb(true)
+            else
+              next_cb(false)
+            end
+          end)
+        end,
+      })
+    end
+
+    -- Step 2: Assign (only if changed)
+    if diff.assignee_changed then
+      table.insert(steps, {
+        desc = "update assignee",
+        fn = function(next_cb)
+          local assignee = diff.new_assignee
+          if assignee == "Unassigned" then assignee = "x" end
+          cli.exec({ "issue", "assign", data.key, assignee }, function(_, stderr, code)
+            if code ~= 0 then
+              vim.notify("Failed to update assignee for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              next_cb(true)
+            else
+              next_cb(false)
+            end
+          end)
+        end,
+      })
+    end
+
+    -- Step 3: Move status (only if changed)
+    if diff.status_changed then
+      table.insert(steps, {
+        desc = "update status",
+        fn = function(next_cb)
+          cli.exec({ "issue", "move", data.key, diff.new_status }, function(_, stderr, code)
+            if code ~= 0 then
+              vim.notify("Failed to update status for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              next_cb(true)
+            else
+              next_cb(false)
+            end
+          end)
+        end,
+      })
+    end
+
+    -- Step 4: Epic change (only if changed)
+    if diff.epic_changed then
+      -- If there was an old epic, remove it first, then add new one
+      if diff.orig_epic_key ~= "" then
+        table.insert(steps, {
+          desc = "remove old epic",
+          fn = function(next_cb)
+            cli.exec({ "epic", "remove", data.key }, function(_, stderr, code)
+              if code ~= 0 then
+                vim.notify("Failed to remove epic from " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+                next_cb(true)
+              else
+                next_cb(false)
+              end
+            end)
+          end,
+        })
+      end
+      if diff.new_epic_key ~= "" then
+        table.insert(steps, {
+          desc = "add new epic",
+          fn = function(next_cb)
+            cli.exec({ "epic", "add", diff.new_epic_key, data.key }, function(_, stderr, code)
+              if code ~= 0 then
+                vim.notify("Failed to add epic to " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+                next_cb(true)
+              else
+                next_cb(false)
+              end
+            end)
+          end,
+        })
       end
     end
-    -- Status change
-    local function do_status()
-      if parsed.fields.status then
-        cli.exec({ "issue", "move", data.key, parsed.fields.status, "--no-input" }, function() end)
+
+    if #steps == 0 then
+      vim.notify("No changes to apply.", vim.log.levels.INFO)
+      if vim.api.nvim_buf_is_valid(buf) then
+        vim.bo[buf].modified = false
       end
+      return
     end
 
-    local function do_epic()
-      local desired = extract_epic_key(parsed.fields.epic or "")
-      local current = data.epic_key or ""
-      if desired == current then
-        return
-      end
-
-      local function mark_ok()
-        data.epic_key = desired
-      end
-
-      local function do_add()
-        if desired == "" then
-          mark_ok()
-          return
+    exec_steps(steps, function(has_errors)
+      if has_errors then
+        vim.notify("Some updates failed for " .. data.key .. ". Check messages above.", vim.log.levels.WARN)
+      else
+        -- Update cached epic key on success
+        if diff.epic_changed then
+          data.epic_key = diff.new_epic_key
         end
-        cli.exec({ "epic", "add", desired, data.key }, function(_, stderr, code)
-          if code ~= 0 then
-            vim.notify("Failed to add epic: " .. (stderr or ""), vim.log.levels.ERROR)
-            return
-          end
-          mark_ok()
-        end)
+        vim.notify("Issue " .. data.key .. " updated successfully!", vim.log.levels.INFO)
       end
-
-      if current ~= "" then
-        cli.exec({ "epic", "remove", data.key }, function(_, stderr, code)
-          if code ~= 0 then
-            vim.notify("Failed to remove epic: " .. (stderr or ""), vim.log.levels.ERROR)
-            return
-          end
-          do_add()
-        end)
-      else
-        do_add()
-      end
-    end
-
-    cli.exec(args, function(stdout, stderr, code)
-      if code ~= 0 then
-        vim.notify("Failed to update issue: " .. (stderr or ""), vim.log.levels.ERROR)
-      else
-        do_assign()
-        do_status()
-        do_epic()
-        vim.notify("Issue updated successfully!", vim.log.levels.INFO)
+      if vim.api.nvim_buf_is_valid(buf) then
         vim.bo[buf].modified = false
       end
     end)

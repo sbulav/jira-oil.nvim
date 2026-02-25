@@ -37,14 +37,16 @@ function M.setup(opts)
     end,
   })
 
-  -- Commands
-  vim.api.nvim_create_user_command("JiraOil", function(args)
-    local target = args.args
-    if target == "" then
-      target = "all"
-    end
-    vim.cmd("edit jira-oil://" .. target)
-  end, { nargs = "?", complete = function() return {"all", "sprint", "backlog"} end })
+  -- Clean up caches when buffers are wiped to prevent memory leaks
+  vim.api.nvim_create_autocmd("BufWipeout", {
+    group = group,
+    pattern = "jira-oil://*",
+    callback = function(args)
+      view.cache[args.buf] = nil
+      scratch.cache[args.buf] = nil
+    end,
+  })
+
 end
 
 ---Open a specific URI
@@ -53,7 +55,7 @@ function M.open(uri)
   if not uri:match("^jira%-oil://") then
     uri = "jira-oil://" .. uri
   end
-  vim.cmd("edit " .. uri)
+  vim.cmd.edit(uri)
 end
 
 return M

@@ -1,17 +1,16 @@
+-- Lazy requires to avoid circular dependency: view -> actions -> mutator -> view
 local config = require("jira-oil.config")
-local parser = require("jira-oil.parser")
-local mutator = require("jira-oil.mutator")
-local keymap_util = require("jira-oil.keymap_util")
 
 local M = {}
 
 M.select = {
   desc = "Open Jira issue",
   callback = function()
+    local parser = require("jira-oil.parser")
     local line = vim.api.nvim_get_current_line()
     local parsed = parser.parse_line(line)
     if parsed and parsed.key and parsed.key ~= "" then
-      vim.cmd("edit jira-oil://issue/" .. parsed.key)
+      vim.cmd.edit("jira-oil://issue/" .. parsed.key)
     end
   end,
 }
@@ -19,7 +18,7 @@ M.select = {
 M.create = {
   desc = "Create new Jira issue",
   callback = function()
-    vim.cmd("edit jira-oil://issue/new")
+    vim.cmd.edit("jira-oil://issue/new")
   end,
 }
 
@@ -38,7 +37,7 @@ M.save = {
     if vim.b[buf].jira_oil_kind == "issue" then
       require("jira-oil.scratch").save(buf)
     else
-      mutator.save(buf)
+      require("jira-oil.mutator").save(buf)
     end
   end,
 }
@@ -82,6 +81,7 @@ M.close = {
 M.show_help = {
   desc = "Show keymaps help",
   callback = function()
+    local keymap_util = require("jira-oil.keymap_util")
     local buf = vim.api.nvim_get_current_buf()
     local keymaps = config.options.keymaps
     if vim.b[buf].jira_oil_kind == "issue" then
@@ -93,11 +93,13 @@ M.show_help = {
 
 ---@param buf number
 function M.setup(buf)
+  local keymap_util = require("jira-oil.keymap_util")
   keymap_util.set_keymaps(config.options.keymaps, buf)
 end
 
 ---@param buf number
 function M.setup_issue(buf)
+  local keymap_util = require("jira-oil.keymap_util")
   keymap_util.set_keymaps(config.options.keymaps_issue, buf)
 end
 

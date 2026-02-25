@@ -17,8 +17,13 @@ local function resolve(rhs)
     return resolve(action)
   elseif type(rhs) == "table" then
     local opts = vim.deepcopy(rhs)
-    local callback, parent_opts = resolve(opts.callback or opts[1])
+    local mode = opts.mode
 
+    -- Resolve the inner callback/action reference (only once)
+    local inner = opts.callback or opts[1]
+    local callback, parent_opts, parent_mode = resolve(inner)
+
+    -- Inherit description from resolved action if not explicitly set
     if parent_opts.desc and not opts.desc then
       if opts.opts then
         opts.desc = string.format("%s %s", parent_opts.desc, vim.inspect(opts.opts):gsub("%s+", " "))
@@ -27,20 +32,18 @@ local function resolve(rhs)
       end
     end
 
-    local mode = opts.mode
-    if type(rhs.callback) == "string" then
-      local action_opts, action_mode
-      callback, action_opts, action_mode = resolve(rhs.callback)
-      opts = vim.tbl_extend("keep", opts, action_opts)
-      mode = mode or action_mode
-    end
+    -- Merge any opts from the resolved action (user opts take priority via "keep")
+    opts = vim.tbl_extend("keep", opts, parent_opts)
+    mode = mode or parent_mode
 
+    -- Clean up internal fields that shouldn't be passed to vim.keymap.set
     opts.callback = nil
     opts.mode = nil
     opts[1] = nil
     opts.deprecated = nil
     opts.parameters = nil
 
+    -- Wrap callback with extra arguments if specified
     if opts.opts and type(callback) == "function" then
       local callback_args = opts.opts
       opts.opts = nil

@@ -57,7 +57,7 @@ function M.parse_line(line)
     local val = parts[i] and util.trim(parts[i]) or ""
     if col.name == "key" then
       parsed.key = val
-      if val:match("^%w+%-%d+$") then
+      if val:match("^[A-Z][A-Z0-9]*%-[0-9]+$") then
         is_new = false
       end
     elseif col.name == "status" then
@@ -85,7 +85,7 @@ function M.parse_line(line)
     if parsed.assignee == "" then parsed.assignee = config.options.defaults.assignee end
     if parsed.status == "" then parsed.status = "To Do" end
     -- The summary might be typed in the first column by mistake, let's fix that
-    if parsed.key and parsed.key ~= "" and not parsed.key:match("^[A-Z0-9]+%-[0-9]+$") then
+    if parsed.key and parsed.key ~= "" and not parsed.key:match("^[A-Z][A-Z0-9]*%-[0-9]+$") then
       if parsed.summary == "" then
         parsed.summary = parsed.key
         parsed.key = ""
