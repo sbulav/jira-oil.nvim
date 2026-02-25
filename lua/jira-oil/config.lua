@@ -11,6 +11,20 @@ local default_config = {
       exclude_jql = "issuetype != Epic",
       status_jql = "status=Open",
     },
+    epics = {
+      args = { "issue", "list", "--type", "Epic" },
+      columns = { "key", "summary", "status" },
+      filters = { "-s~done", "-s~closed" },
+      order_by = "created",
+      prefill_search = "",
+    },
+    epic_issues = {
+      args = { "issue", "list" },
+      columns = { "type", "key", "assignee", "status", "summary", "labels" },
+      filters = { "-s~done", "-s~closed" },
+      order_by = "status",
+      prefill_search = "",
+    },
   },
   view = {
     columns = {
@@ -37,10 +51,12 @@ local default_config = {
   },
   -- Keymaps in jira-oil issue scratch buffers
   keymaps_issue = {
-    ["g?"] = { "actions.show_help", mode = "n" },
-    ["gR"] = { "actions.reset", mode = "n" },
-    ["<C-q>"] = { "actions.close", mode = "n" },
-    ["<C-s>"] = { "actions.save", mode = "n" },
+    ["g?"] = { "actions.show_help", mode = { "n", "i" } },
+    ["gR"] = { "actions.reset", mode = { "n", "i" } },
+    ["<C-e>"] = { "actions.pick_epic", mode = { "n", "i" } },
+    ["<C-o>"] = { "actions.pick_components", mode = { "n", "i" } },
+    ["<C-q>"] = { "actions.close", mode = { "n", "i" } },
+    ["<C-s>"] = { "actions.save", mode = { "n", "i" } },
   },
   -- Set to false to disable all of the above keymaps
   use_default_keymaps = true,
@@ -50,8 +66,12 @@ local default_config = {
   -- Use ENV by default or override
   defaults = {
     project = vim.env.JIRA_PROJECT or "",
-    assignee = vim.env.JIRA_ASSIGNEE or "me",
+    assignee = vim.env.JIRA_USER or vim.env.JIRA_ASSIGNEE or "",
     issue_type = "Task",
+    status = "Open",
+  },
+  create = {
+    available_components = {},
   },
 }
 

@@ -205,4 +205,40 @@ function M.get_issue(key, callback)
   end)
 end
 
+---Fetch epics list for selection
+---@param callback function(epics)
+function M.get_epics(callback)
+  local epic_cfg = config.options.cli.epics or {}
+  local args = vim.deepcopy(epic_cfg.args or { "issue", "list", "--type", "Epic" })
+  if epic_cfg.filters and #epic_cfg.filters > 0 then
+    vim.list_extend(args, epic_cfg.filters)
+  end
+  if epic_cfg.order_by and epic_cfg.order_by ~= "" then
+    vim.list_extend(args, { "--order-by", epic_cfg.order_by })
+  end
+  if epic_cfg.prefill_search and epic_cfg.prefill_search ~= "" then
+    vim.list_extend(args, { "--query", epic_cfg.prefill_search })
+  end
+  local columns = epic_cfg.columns or { "key", "summary" }
+  vim.list_extend(args, { "--csv", "--columns", table.concat(columns, ",") })
+
+  M.exec(args, function(stdout, stderr, code)
+    if code ~= 0 then
+      vim.notify("Error fetching epics: " .. (stderr or ""), vim.log.levels.ERROR)
+      callback({})
+      return
+    end
+    local rows = parse_issue_csv(stdout)
+    local epics = {}
+    for _, issue in ipairs(rows) do
+      local key = issue.key or ""
+      local summary = issue.fields and issue.fields.summary or ""
+      if key ~= "" then
+        table.insert(epics, { key = key, summary = summary })
+      end
+    end
+    callback(epics)
+  end)
+end
+
 return M

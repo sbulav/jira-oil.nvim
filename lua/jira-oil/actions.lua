@@ -55,6 +55,22 @@ M.reset = {
   end,
 }
 
+M.pick_epic = {
+  desc = "Select epic",
+  callback = function(opts)
+    local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
+    require("jira-oil.scratch").pick_epic(buf)
+  end,
+}
+
+M.pick_components = {
+  desc = "Select components",
+  callback = function(opts)
+    local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
+    require("jira-oil.scratch").pick_components(buf)
+  end,
+}
+
 M.close = {
   desc = "Close Jira buffer",
   callback = function(opts)
