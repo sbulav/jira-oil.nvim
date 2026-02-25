@@ -41,10 +41,10 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("JiraOil", function(args)
     local target = args.args
     if target == "" then
-      target = "sprint"
+      target = "all"
     end
     vim.cmd("edit jira-oil://" .. target)
-  end, { nargs = "?", complete = function() return {"sprint", "backlog"} end })
+  end, { nargs = "?", complete = function() return {"all", "sprint", "backlog"} end })
 end
 
 ---Open a specific URI

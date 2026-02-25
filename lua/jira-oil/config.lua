@@ -5,12 +5,17 @@ local config = {
   cli = {
     cmd = "jira",
     timeout = 10000,
+    issues = {
+      columns = { "key", "assignee", "status", "summary", "labels" },
+      team_jql = "",
+      exclude_jql = "issuetype != Epic",
+      status_jql = "status=Open",
+    },
   },
   view = {
     columns = {
       { name = "key", width = 12 },
       { name = "status", width = 15 },
-      { name = "type", width = 10 },
       { name = "assignee", width = 15 },
       { name = "summary" },
     },
@@ -18,9 +23,9 @@ local config = {
   },
   keymaps = {
     open = "<CR>",
-    create = "c",
+    create = "<C-c>",
     refresh = "<M-r>",
-    close = "q",
+    close = "<C-q>",
     save = "<C-s>",
   },
   -- Use ENV by default or override

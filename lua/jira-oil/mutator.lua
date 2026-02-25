@@ -17,11 +17,21 @@ function M.compute_diff(buf)
   local current = {}
   local mutations = {}
 
+  local current_section = data.target == "backlog" and "backlog" or "sprint"
+  local function is_separator(line)
+    return data.target == "all" and line == view.separator
+  end
+
   for _, line in ipairs(lines) do
     if line:match("%S") then
-      local parsed = parser.parse_line(line)
-      if parsed then
-        table.insert(current, parsed)
+      if is_separator(line) then
+        current_section = "backlog"
+      else
+        local parsed = parser.parse_line(line)
+        if parsed then
+          parsed.section = current_section
+          table.insert(current, parsed)
+        end
       end
     end
   end
@@ -40,6 +50,10 @@ function M.compute_diff(buf)
       local orig = find_original(item.key)
       if orig then
         local updates = {}
+        if orig.section and item.section and orig.section ~= item.section then
+          local dest = item.section == "backlog" and "BACKLOG" or "SPRINT"
+          table.insert(mutations, { type = "MOVE", key = item.key, dest = dest })
+        end
         if item.status ~= orig.status then table.insert(updates, "status: " .. orig.status .. " -> " .. item.status) end
         if item.assignee ~= orig.assignee then table.insert(updates, "assignee: " .. orig.assignee .. " -> " .. item.assignee) end
         if item.summary ~= orig.summary then table.insert(updates, "summary: " .. orig.summary .. " -> " .. item.summary) end
@@ -59,7 +73,8 @@ function M.compute_diff(buf)
 
   for _, item in ipairs(original) do
     if not find_current(item.key) then
-      local dest = data.target == "sprint" and "BACKLOG" or "SPRINT"
+      local from_section = item.section or data.target
+      local dest = from_section == "sprint" and "BACKLOG" or "SPRINT"
       table.insert(mutations, { type = "MOVE", key = item.key, dest = dest })
     end
   end
@@ -106,6 +121,12 @@ function M.save(buf)
     border = "rounded",
     title = " Confirm Changes ",
   })
+  vim.schedule(function()
+    if vim.api.nvim_win_is_valid(winnr) then
+      vim.api.nvim_set_current_win(winnr)
+      vim.api.nvim_set_current_buf(bufnr)
+    end
+  end)
 
   vim.bo[bufnr].modifiable = false
   vim.bo[bufnr].bufhidden = "wipe"
@@ -195,7 +216,7 @@ function M.execute_mutations(buf, mutations)
               if update:match("^status:") then status_changed = true end
             end
             if status_changed then
-              cli.exec({ "issue", "move", m.key, m.item.status, "--no-input" }, function(s3, e3, c3)
+              cli.exec({ "issue", "move", m.key, m.item.status }, function(s3, e3, c3)
                 if c3 ~= 0 then
                   vim.notify("Failed to update status " .. m.key .. ": " .. (e3 or ""), vim.log.levels.ERROR)
                   has_errors = true
@@ -210,7 +231,7 @@ function M.execute_mutations(buf, mutations)
           if assignee_changed then
             local assignee = m.item.assignee
             if assignee == "Unassigned" then assignee = "x" end
-            cli.exec({ "issue", "assign", m.key, assignee, "--no-input" }, function(s2, e2, c2)
+            cli.exec({ "issue", "assign", m.key, assignee }, function(s2, e2, c2)
               if c2 ~= 0 then
                 vim.notify("Failed to update assignee " .. m.key .. ": " .. (e2 or ""), vim.log.levels.ERROR)
                 has_errors = true
@@ -236,7 +257,7 @@ function M.execute_mutations(buf, mutations)
       elseif m.type == "MOVE" then
         if m.dest == "SPRINT" then
           if sprint_id then
-            cli.exec({ "sprint", "add", sprint_id, m.key, "--no-input" }, function(stdout, stderr, code)
+            cli.exec({ "sprint", "add", sprint_id, m.key }, function(stdout, stderr, code)
               if code ~= 0 then
                 vim.notify("Failed to move to sprint " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
                 has_errors = true
