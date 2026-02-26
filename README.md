@@ -64,7 +64,7 @@ PROJ-102 │ To Do       │ john │ Update README
 - **Edit an issue**: Change text directly. "To Do" → "In Progress" queues a status transition
 - **Create inline**: Type a new line with a summary. Empty key column means new task
 - **Copy task**: Yank a line (`yy`), paste (`p` or `P`). The new task copies fields from the source
-- **Move to sprint/backlog**: Delete a line (`dd`). In sprint view, saving moves it to backlog
+- **Move between sprint/backlog**: Press `dd` on an issue in the combined view. It is moved to the opposite section immediately and marked `[draft]` until saved
 - **Open in browser**: `gB` opens the issue in your browser
 
 ### Scratch Buffer (`jira-oil://issue/PROJ-101`)
@@ -112,6 +112,7 @@ Use `gR` to reset drafts and restore original values.
 | `gR` | Reset unsaved changes |
 | `gB` | Open issue in browser |
 | `<C-y>` | Yank issue key (works in visual mode) |
+| `dd` | Move issue between Sprint/Backlog (marks draft) |
 | `p` | Paste task copy after cursor |
 | `P` | Paste task copy before cursor |
 | `<C-q>` | Close buffer |
@@ -198,6 +199,7 @@ require("jira-oil").setup({
     ["<C-c>"] = { "actions.create", mode = "n" },
     ["gB"] = { "actions.open_in_browser", mode = "n" },
     ["<C-y>"] = { "actions.yank_issue_key", mode = { "n", "v" } },
+    ["dd"] = { "actions.move_issue_to_other_section", mode = "n" },
     ["p"] = { "actions.paste_after", mode = "n" },
     ["P"] = { "actions.paste_before", mode = "n" },
     ["<M-r>"] = { "actions.refresh", mode = "n" },

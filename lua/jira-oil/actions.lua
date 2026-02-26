@@ -276,6 +276,66 @@ local function fallback_source_from_last_yank(line)
   return nil
 end
 
+---@param lines string[]
+---@param section string
+---@return integer|nil
+local function section_header_row(lines, section)
+  local view = require("jira-oil.view")
+  local header = section == "backlog" and view.header_backlog or view.header_sprint
+  for i, line in ipairs(lines) do
+    if line == header then
+      return i - 1
+    end
+  end
+  return nil
+end
+
+---@param lines string[]
+---@param row integer
+---@param target string
+---@return string|nil
+local function section_for_row(lines, row, target)
+  local view = require("jira-oil.view")
+  local current = target == "backlog" and "backlog" or "sprint"
+  for i = 1, math.min(#lines, row + 1) do
+    local line = lines[i]
+    if line == view.header_backlog then
+      current = "backlog"
+    elseif line == view.header_sprint then
+      current = "sprint"
+    end
+  end
+  return current
+end
+
+---@param row_map table<number, string>
+---@param moved_row integer
+---@param insert_row integer
+---@return table<number, string>
+local function remap_rows_after_move(row_map, moved_row, insert_row)
+  local remapped = {}
+  for row, value in pairs(row_map or {}) do
+    if row ~= moved_row then
+      local row_after_delete = row
+      if row > moved_row then
+        row_after_delete = row - 1
+      end
+
+      local row_after_insert = row_after_delete
+      if row_after_delete >= insert_row then
+        row_after_insert = row_after_delete + 1
+      end
+      remapped[row_after_insert] = value
+    end
+  end
+
+  local moved_value = row_map and row_map[moved_row] or nil
+  if moved_value and moved_value ~= "" then
+    remapped[insert_row] = moved_value
+  end
+  return remapped
+end
+
 ---@param key string
 ---@param before boolean
 local function paste_with_metadata(key, before)
@@ -352,6 +412,72 @@ M.paste_before = {
   desc = "Paste task copy before cursor",
   callback = function()
     paste_with_metadata(vim.v.register, true)
+  end,
+}
+
+M.move_issue_to_other_section = {
+  desc = "Move issue sprint/backlog",
+  callback = function(opts)
+    local view = require("jira-oil.view")
+    local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
+    if vim.b[buf].jira_oil_kind ~= "list" then
+      return
+    end
+
+    local data = view.cache[buf]
+    if not data then
+      return
+    end
+
+    local row = vim.api.nvim_win_get_cursor(0)[1] - 1
+    local key = view.get_key_at_line(buf, row)
+    if not key or key == "" then
+      vim.notify("No Jira issue on current line.", vim.log.levels.WARN)
+      return
+    end
+
+    if data.target ~= "all" then
+      vim.cmd.normal({ args = { "dd" }, bang = true })
+      view.decorate_current(buf)
+      vim.notify("Issue removed from current view. Open jira-oil://all to drag between Sprint and Backlog.", vim.log.levels.INFO)
+      return
+    end
+
+    local lines_before = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    local moved_line = lines_before[row + 1]
+    if not moved_line then
+      return
+    end
+
+    local from_section = section_for_row(lines_before, row, data.target)
+    local to_section = from_section == "sprint" and "backlog" or "sprint"
+
+    local keys_before = view.get_all_line_keys(buf)
+    local sources_before = view.get_all_copy_sources(buf)
+
+    vim.api.nvim_buf_set_lines(buf, row, row + 1, false, {})
+    local lines_after_delete = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    local header_row = section_header_row(lines_after_delete, to_section)
+    if header_row == nil then
+      vim.api.nvim_buf_set_lines(buf, row, row, false, { moved_line })
+      view.replace_all_line_keys(buf, keys_before)
+      view.replace_all_copy_sources(buf, sources_before)
+      view.decorate_current(buf)
+      vim.notify("Destination section not found.", vim.log.levels.ERROR)
+      return
+    end
+
+    local insert_row = header_row + 1
+    vim.api.nvim_buf_set_lines(buf, insert_row, insert_row, false, { moved_line })
+
+    local remapped_keys = remap_rows_after_move(keys_before, row, insert_row)
+    local remapped_sources = remap_rows_after_move(sources_before, row, insert_row)
+    view.replace_all_line_keys(buf, remapped_keys)
+    view.replace_all_copy_sources(buf, remapped_sources)
+
+    vim.api.nvim_win_set_cursor(0, { insert_row + 1, 0 })
+    view.decorate_current(buf)
+    vim.notify("Moved " .. key .. " to " .. (to_section == "sprint" and "Sprint" or "Backlog") .. " [draft]", vim.log.levels.INFO)
   end,
 }
 
