@@ -6,6 +6,10 @@ Inspired by [oil.nvim](https://github.com/stevearc/oil.nvim), this plugin gives
 you a virtual "filesystem" for Jira tasks. View issues in a list, edit fields
 inline, and save to dispatch changes. No more switching between browser tabs.
 
+<img width="1906" height="378" alt="image" src="https://github.com/user-attachments/assets/f914c906-0318-49b5-986d-fb126fba91f5" />
+
+<img width="1546" height="222" alt="image" src="https://github.com/user-attachments/assets/039cab06-21c7-4b5f-9149-12d9dd461ada" />
+
 ## Features
 
 - **Buffer-as-Jira**: View sprint and backlog as a tabular list in a normal Neovim buffer
