@@ -435,50 +435,69 @@ Set `use_default_keymaps = false` to start with no keymaps.
 
 ```mermaid
 flowchart TB
-    subgraph Entry
+    subgraph Entry_Points
+        cmd[plugin/jira-oil.lua<br/>:JiraOil user command]
         init[init.lua<br/>setup + autocmds]
-        cmd[plugin/jira-oil.lua<br/>:JiraOil command]
     end
 
-    subgraph Buffers
-        view[view.lua<br/>List buffer]
-        scratch[scratch.lua<br/>Issue buffer]
+    subgraph Buffer_Layer
+        view[view.lua<br/>List buffer renderer]
+        scratch[scratch.lua<br/>Issue scratch buffer]
     end
 
-    subgraph Core
-        parser[parser.lua<br/>Parse/format lines]
-        mutator[mutator.lua<br/>Compute & apply diffs]
-        cli[cli.lua<br/>jira CLI wrapper]
+    subgraph Core_Services
         actions[actions.lua<br/>Keymap callbacks]
+        mutator[mutator.lua<br/>Diff + mutation executor]
+        parser[parser.lua<br/>List line parse/format]
+        cli[cli.lua<br/>jira-cli adapter]
+        cache[(Response cache +<br/>inflight de-dup)]
     end
 
-    subgraph Config
+    subgraph Shared
         config[config.lua<br/>Options]
-        keymap_util[keymap_util.lua<br/>Keymap setup]
+        keymap_util[keymap_util.lua<br/>Keymap resolver/help]
         util[util.lua<br/>Helpers]
     end
 
+    jira[(jira CLI binary)]
+
     cmd --> init
-    init --> view
-    init --> scratch
+    init -->|open list URIs| view
+    init -->|open issue URIs| scratch
+    init -->|save list buffer| mutator
+    init -->|save issue buffer| scratch
     
     view --> parser
-    view --> mutator
     view --> actions
+    view --> cli
     
-    scratch --> cli
     scratch --> actions
+    scratch --> cli
     
-    mutator --> cli
-    mutator --> parser
-    
-    actions --> cli
     actions --> view
     actions --> scratch
+    actions --> cli
+
+    mutator --> parser
+    mutator --> cli
+    mutator --> scratch
+    mutator -->|clear cache on writes| cache
     
+    cli <--> cache
+    cli --> jira
+    
+    config --> cli
+    config --> mutator
     config --> view
     config --> scratch
     config --> actions
+    config --> parser
+    keymap_util --> actions
+
+    util --> view
+    util --> scratch
+    util --> mutator
+    util --> cli
 ```
 
 **Module responsibilities:**
