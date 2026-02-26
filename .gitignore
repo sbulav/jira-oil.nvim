@@ -1,0 +1,13 @@
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local Neovim / Lua tooling
+.luarc.json
+.luarc.jsonc
+
+# Local test/runtime artifacts
+.tmp/
+tmp/
+coverage/

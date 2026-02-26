@@ -141,7 +141,7 @@ require("jira-oil").setup({
       columns = { "key", "assignee", "status", "summary", "labels" },
       team_jql = "",
       exclude_jql = "issuetype != Epic",
-      status_jql = "status=Open",
+      status_jql = "",
     },
     epics = {
       args = { "issue", "list", "--type", "Epic" },
@@ -232,13 +232,23 @@ require("jira-oil").setup({
     issue_type = "Task",
     status = "Open",
   },
-  epic_field = "customfield_12311", -- Jira custom field for Epic link
-  epic_clear_value = "null",
+  -- Optional: set if your Jira instance stores epic link in a custom field
+  epic_field = "",
   create = {
     available_components = {}, -- List for component picker
   },
 })
 ```
+
+### Instance-Specific Configuration
+
+These values usually depend on your Jira tenant. Keep them in your local Neovim config, not in this repository:
+
+- `defaults.project` (example: `"PROJ"`)
+- `cli.issues.team_jql` and `cli.issues.status_jql`
+- `cli.epics.args` / `cli.epic_issues.args` if your team uses custom filters
+- `create.available_components`
+- `epic_field` if your Jira uses a custom field for Epic link
 
 ### Disabling Keymaps
 

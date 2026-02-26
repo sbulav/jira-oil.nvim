@@ -18,7 +18,7 @@ local default_config = {
       columns = { "key", "assignee", "status", "summary", "labels" },
       team_jql = "",
       exclude_jql = "issuetype != Epic",
-      status_jql = "status=Open",
+      status_jql = "",
     },
     epics = {
       args = { "issue", "list", "--type", "Epic" },
@@ -154,8 +154,7 @@ local default_config = {
     issue_type = "Task",
     status = "Open",
   },
-  epic_field = "customfield_12311",
-  epic_clear_value = "null",
+  epic_field = "",
   create = {
     available_components = {},
   },
