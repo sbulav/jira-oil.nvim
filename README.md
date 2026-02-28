@@ -8,7 +8,8 @@ inline, and save to dispatch changes. No more switching between browser tabs.
 
 <img width="1906" height="378" alt="image" src="https://github.com/user-attachments/assets/f914c906-0318-49b5-986d-fb126fba91f5" />
 
-<img width="1546" height="222" alt="image" src="https://github.com/user-attachments/assets/039cab06-21c7-4b5f-9149-12d9dd461ada" />
+![jira-oil-demo-fin](https://github.com/user-attachments/assets/0508aed2-0c29-4520-8372-c5abd2f39616)
+
 
 ## Features
 
