@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# Mock jira-cli for demo recordings
+# Returns static fake data that looks realistic
+
+set -e
+
+FAKE_PROJECT="${JIRA_DEMO_PROJECT:-DEMO}"
+
+# Helper to generate fake sprint issues JSON
+fake_sprint_issues() {
+  cat << 'EOF'
+{"issues":[
+  {"key":"DEMO-101","fields":{"summary":"Implement user authentication","status":{"name":"In Progress"},"issuetype":{"name":"Task"},"assignee":{"displayName":"Alice Chen"},"labels":["security"]}},
+  {"key":"DEMO-102","fields":{"summary":"Add dark mode support","status":{"name":"To Do"},"issuetype":{"name":"Story"},"assignee":{"displayName":"Bob Smith"},"labels":["ui"]}},
+  {"key":"DEMO-103","fields":{"summary":"Fix pagination bug","status":{"name":"In Review"},"issuetype":{"name":"Bug"},"assignee":{"displayName":"Carol Wu"},"labels":[]}},
+  {"key":"DEMO-104","fields":{"summary":"Write API documentation","status":{"name":"In Progress"},"issuetype":{"name":"Task"},"assignee":{"displayName":"Alice Chen"},"labels":["docs"]}},
+  {"key":"DEMO-105","fields":{"summary":"Optimize database queries","status":{"name":"To Do"},"issuetype":{"name":"Improvement"},"assignee":{"displayName":"David Lee"},"labels":["performance"]}}
+]}
+EOF
+}
+
+# Helper to generate fake backlog issues JSON
+fake_backlog_issues() {
+  cat << 'EOF'
+{"issues":[
+  {"key":"DEMO-201","fields":{"summary":"Design new dashboard layout","status":{"name":"Open"},"issuetype":{"name":"Story"},"assignee":{"displayName":"Unassigned"},"labels":[]}},
+  {"key":"DEMO-202","fields":{"summary":"Migrate to PostgreSQL","status":{"name":"Open"},"issuetype":{"name":"Task"},"assignee":{"displayName":"David Lee"},"labels":["backend"]}},
+  {"key":"DEMO-203","fields":{"summary":"Implement 2FA login","status":{"name":"To Do"},"issuetype":{"name":"Feature"},"assignee":{"displayName":"Alice Chen"},"labels":["security"]}}
+]}
+EOF
+}
+
+# Helper to generate fake epics JSON
+fake_epics() {
+  cat << 'EOF'
+{"issues":[
+  {"key":"DEMO-10","fields":{"summary":"Authentication System","status":{"name":"In Progress"}}},
+  {"key":"DEMO-20","fields":{"summary":"Dashboard Redesign","status":{"name":"To Do"}}},
+  {"key":"DEMO-30","fields":{"summary":"Performance Improvements","status":{"name":"In Progress"}}}
+]}
+EOF
+}
+
+# Helper for single issue view
+fake_issue_view() {
+  local key="$1"
+  case "$key" in
+    DEMO-101)
+      cat << 'EOF'
+{"key":"DEMO-101","fields":{"summary":"Implement user authentication","status":{"name":"In Progress"},"issuetype":{"name":"Task"},"assignee":{"displayName":"Alice Chen"},"project":{"key":"DEMO"},"parent":{"key":"DEMO-10","fields":{"summary":"Authentication System"}},"components":[{"name":"Backend"}],"description":"Users should be able to:\n- Log in with email/password\n- Reset password via email\n- Stay logged in with remember me"}}
+EOF
+      ;;
+    DEMO-102)
+      cat << 'EOF'
+{"key":"DEMO-102","fields":{"summary":"Add dark mode support","status":{"name":"To Do"},"issuetype":{"name":"Story"},"assignee":{"displayName":"Bob Smith"},"project":{"key":"DEMO"},"components":[{"name":"Frontend"}],"description":"Implement a dark theme that:\n- Toggles via user preference\n- Persists across sessions\n- Respects system preference"}}
+EOF
+      ;;
+    DEMO-103)
+      cat << 'EOF'
+{"key":"DEMO-103","fields":{"summary":"Fix pagination bug","status":{"name":"In Review"},"issuetype":{"name":"Bug"},"assignee":{"displayName":"Carol Wu"},"project":{"key":"DEMO"},"components":[{"name":"Backend"},{"name":"Frontend"}],"description":"When navigating to page 2, items from page 1 are shown instead.\n\nSteps to reproduce:\n1. Go to items list\n2. Click page 2\n3. Observe incorrect items"}}
+EOF
+      ;;
+    *)
+      cat << EOF
+{"key":"$key","fields":{"summary":"Demo issue $key","status":{"name":"Open"},"issuetype":{"name":"Task"},"assignee":{"displayName":"Demo User"},"project":{"key":"$FAKE_PROJECT"},"components":[],"description":"This is a demo issue."}
+EOF
+      ;;
+  esac
+}
+
+# Active sprint list
+fake_sprint_list() {
+  cat << 'EOF'
+id	name	state	startDate	endDate
+1	Sprint 1	active	2024-01-01	2024-01-15
+EOF
+}
+
+# Parse command
+cmd="$1"
+shift || true
+
+case "$cmd" in
+  sprint)
+    if [[ "$*" == *"list"* && "$*" == *"--raw"* ]]; then
+      fake_sprint_list
+      exit 0
+    fi
+    ;;
+
+  issue)
+    subcmd="$1"
+    shift || true
+    
+    case "$subcmd" in
+      list)
+        # Check for sprint or backlog query
+        if [[ "$*" == *"sprint in openSprints()"* ]]; then
+          fake_sprint_issues
+        elif [[ "$*" == *"sprint IS EMPTY"* ]]; then
+          fake_backlog_issues
+        elif [[ "$*" == *"Epic"* && "$*" != *"sprint"* ]]; then
+          fake_epics
+        else
+          fake_sprint_issues
+        fi
+        exit 0
+        ;;
+      
+      view)
+        key="$1"
+        fake_issue_view "$key"
+        exit 0
+        ;;
+      
+      create)
+        # Simulate success, output new key
+        echo "Issue DEMO-999 created."
+        exit 0
+        ;;
+      
+      edit)
+        # Simulate success
+        exit 0
+        ;;
+      
+      assign)
+        # Simulate success
+        exit 0
+        ;;
+      
+      move)
+        # Simulate success
+        exit 0
+        ;;
+    esac
+    ;;
+
+  epic)
+    subcmd="$1"
+    shift || true
+    case "$subcmd" in
+      add|remove)
+        # Simulate success
+        exit 0
+        ;;
+    esac
+    ;;
+esac
+
+# Default: return empty success
+echo ""
+exit 0
