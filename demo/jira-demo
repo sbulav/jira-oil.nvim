@@ -2,7 +2,7 @@
 # Mock jira-cli for demo recordings
 # Returns static fake data that looks realistic
 
-set -e
+set -euo pipefail
 
 FAKE_PROJECT="${JIRA_DEMO_PROJECT:-DEMO}"
 
@@ -60,9 +60,34 @@ EOF
 {"key":"DEMO-103","fields":{"summary":"Fix pagination bug","status":{"name":"In Review"},"issuetype":{"name":"Bug"},"assignee":{"displayName":"Carol Wu"},"project":{"key":"DEMO"},"components":[{"name":"Backend"},{"name":"Frontend"}],"description":"When navigating to page 2, items from page 1 are shown instead.\n\nSteps to reproduce:\n1. Go to items list\n2. Click page 2\n3. Observe incorrect items"}}
 EOF
       ;;
+    DEMO-104)
+      cat << 'EOF'
+{"key":"DEMO-104","fields":{"summary":"Write API documentation","status":{"name":"In Progress"},"issuetype":{"name":"Task"},"assignee":{"displayName":"Alice Chen"},"project":{"key":"DEMO"},"components":[{"name":"API"}],"description":"Document public API endpoints:\n- Authentication\n- Pagination\n- Error handling\n- Example requests and responses"}}
+EOF
+      ;;
+    DEMO-105)
+      cat << 'EOF'
+{"key":"DEMO-105","fields":{"summary":"Optimize database queries","status":{"name":"To Do"},"issuetype":{"name":"Improvement"},"assignee":{"displayName":"David Lee"},"project":{"key":"DEMO"},"components":[{"name":"Database"}],"description":"Identify and optimize slow queries in dashboard and reporting flows."}}
+EOF
+      ;;
+    DEMO-201)
+      cat << 'EOF'
+{"key":"DEMO-201","fields":{"summary":"Design new dashboard layout","status":{"name":"Open"},"issuetype":{"name":"Story"},"assignee":null,"project":{"key":"DEMO"},"components":[{"name":"Frontend"}],"description":"Create a new dashboard wireframe with clearer hierarchy and widget layout."}}
+EOF
+      ;;
+    DEMO-202)
+      cat << 'EOF'
+{"key":"DEMO-202","fields":{"summary":"Migrate to PostgreSQL","status":{"name":"Open"},"issuetype":{"name":"Task"},"assignee":{"displayName":"David Lee"},"project":{"key":"DEMO"},"components":[{"name":"Backend"},{"name":"Database"}],"description":"Prepare migration plan from SQLite to PostgreSQL with rollback strategy."}}
+EOF
+      ;;
+    DEMO-203)
+      cat << 'EOF'
+{"key":"DEMO-203","fields":{"summary":"Implement 2FA login","status":{"name":"To Do"},"issuetype":{"name":"Feature"},"assignee":{"displayName":"Alice Chen"},"project":{"key":"DEMO"},"components":[{"name":"Backend"},{"name":"Frontend"}],"description":"Add optional 2FA using TOTP app codes and backup recovery codes."}}
+EOF
+      ;;
     *)
       cat << EOF
-{"key":"$key","fields":{"summary":"Demo issue $key","status":{"name":"Open"},"issuetype":{"name":"Task"},"assignee":{"displayName":"Demo User"},"project":{"key":"$FAKE_PROJECT"},"components":[],"description":"This is a demo issue."}
+{"key":"$key","fields":{"summary":"Demo issue $key","status":{"name":"Open"},"issuetype":{"name":"Task"},"assignee":{"displayName":"Demo User"},"project":{"key":"$FAKE_PROJECT"},"components":[],"description":"This is a demo issue."}}
 EOF
       ;;
   esac
@@ -77,20 +102,37 @@ EOF
 }
 
 # Parse command
-cmd="$1"
-shift || true
+cmd="${1:-}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
 
 case "$cmd" in
   sprint)
-    if [[ "$*" == *"list"* && "$*" == *"--raw"* ]]; then
-      fake_sprint_list
-      exit 0
+    subcmd="${1:-}"
+    if [[ $# -gt 0 ]]; then
+      shift
     fi
+    case "$subcmd" in
+      list)
+        if [[ "$*" == *"--raw"* ]]; then
+          fake_sprint_list
+          exit 0
+        fi
+        ;;
+      add|remove)
+        # Simulate success for moving issues between sprint/backlog.
+        # Real jira-cli prints nothing on success in many cases.
+        exit 0
+        ;;
+    esac
     ;;
 
   issue)
-    subcmd="$1"
-    shift || true
+    subcmd="${1:-}"
+    if [[ $# -gt 0 ]]; then
+      shift
+    fi
     
     case "$subcmd" in
       list)
@@ -115,7 +157,7 @@ case "$cmd" in
       
       create)
         # Simulate success, output new key
-        echo "Issue DEMO-999 created."
+        echo "Issue ${FAKE_PROJECT}-999 created."
         exit 0
         ;;
       
@@ -136,9 +178,16 @@ case "$cmd" in
     esac
     ;;
 
+  open)
+    # Simulate opening a browser tab for a Jira issue key.
+    exit 0
+    ;;
+
   epic)
-    subcmd="$1"
-    shift || true
+    subcmd="${1:-}"
+    if [[ $# -gt 0 ]]; then
+      shift
+    fi
     case "$subcmd" in
       add|remove)
         # Simulate success

@@ -15,11 +15,20 @@ without exposing real Jira data.
 ## Quick Start
 
 ```bash
+# Enter reproducible demo environment (recommended)
+nix develop
+
 # Test the mock CLI
 ./demo/jira-demo issue list -q "sprint in openSprints()" --raw
 
 # Test the demo in Neovim
 nvim -u demo/demo.lua
+
+# Record the demo GIF
+vhs demo/record.tape
+
+# or via flake app
+nix run .#record-demo
 ```
 
 ## Recording Methods
@@ -29,8 +38,8 @@ nvim -u demo/demo.lua
 [VHS](https://github.com/charmbracelet/vhs) creates recordings from scripts:
 
 ```bash
-# Install vhs
-go install github.com/charmbracelet/vhs@latest
+# Enter the nix shell with all recording dependencies
+nix develop
 
 # Run recording
 vhs demo/record.tape
@@ -43,8 +52,8 @@ Output: `demo/jira-oil-demo.gif`
 [Asciinema](https://asciinema.org/) records your terminal session:
 
 ```bash
-# Install (NixOS)
-nix-shell -p asciinema agg
+# Install with Nix
+nix shell nixpkgs#asciinema
 
 # Run recording script
 ./demo/record-asciinema.sh
@@ -56,7 +65,7 @@ Or manually:
 # Record
 asciinema rec demo/demo.cast --command "nvim -u demo/demo.lua"
 
-# Convert to GIF
+# Convert to GIF (optional; requires agg)
 agg --font-family "JetBrains Mono" --font-size 16 demo/demo.cast demo/jira-oil-demo.gif
 ```
 
@@ -82,6 +91,9 @@ Edit `demo/jira-demo` to change the fake issues:
 # Modify issue details in fake_issue_view()
 # Add new components in demo.lua's create.available_components
 ```
+
+The mock CLI is intentionally static and fake so no real project names,
+people, ticket titles, or internal links appear in recordings.
 
 ## Color Schemes
 

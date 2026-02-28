@@ -1,120 +1,82 @@
-Require jira-oil.nvim
-
-# VHS Recording Script
-# =====================
-# Install vhs: https://github.com/charmbracelet/vhs
-# Run: vhs demo/record.tape
+Require nvim
+Require vhs
 
 Output demo/jira-oil-demo.gif
 
-Set FontSize 14
-Set FontFamily "JetBrains Mono Nerd Font"
-Set Padding 10
-Set Width 1000
-Set Height 600
+Set Shell "bash"
+Set FontSize 18
+Set FontFamily "JetBrains Mono"
+Set Padding 12
+Set Width 1300
+Set Height 650
 Set Theme "Catppuccin Mocha"
+Set TypingSpeed 70ms
 
-# Hide cursor for cleaner recording
 Hide
 Type "nvim -u demo/demo.lua"
 Enter
-Sleep 1500ms
-
-# Wait for buffer to load
-Sleep 1000ms
-
 Show
 
-# Demo: View sprint and backlog issues
-# =====================================
+# Let jira-oil open and render sprint + backlog
+Sleep 3200ms
 
-# Navigate through the list
-Sleep 500ms
-Type "jjj"
-Sleep 300ms
-
-# Open an issue (DEMO-101)
-Type "Enter"
-Sleep 800ms
-
-# View the issue details
-Sleep 1000ms
-
-# Go back to list
-Type "Escape"
-Type ":q"
+# Open first issue in scratch view
+Type "j"
+Sleep 600ms
 Enter
-Sleep 500ms
+Sleep 2800ms
 
-# Demo: Edit status inline
-# ========================
+# Close scratch and return to list
+Ctrl+Q
+Sleep 2500ms
 
-# Go to DEMO-102 line
-Type "jj"
-Sleep 200ms
+# Bulk change assignee for multiple issues in one command
+Type ":%s/Alice Chen/Sam Rivera/g"
+Enter
+Sleep 2400ms
 
-# Edit status (simulate changing "To Do" to "In Progress")
-Type "ww"
-Sleep 200ms
-Type "cw"
-Sleep 100ms
-Type "In Progress"
-Escape
-Sleep 300ms
+# Go to second sprint issue and edit status inline
+Type "j"
+Sleep 550ms
+Type ":s/To Do/In Progress/"
+Enter
+Sleep 1800ms
 
-# Show the [draft] marker appears
-Sleep 500ms
+# Move issue across sections (Sprint -> Backlog)
+Type "dd"
+Sleep 1800ms
 
-# Demo: Save changes
-# ==================
-
-Type "Ctrl+s"
-Sleep 500ms
-
-# Confirm save (Y in floating window)
+# Save list changes and confirm mutation dialog
+Ctrl+S
+Sleep 3200ms
 Type "Y"
-Sleep 500ms
+Sleep 2600ms
 
-# Demo: Create new issue
-# ======================
-
-# Open create buffer
-Type "Ctrl+c"
-Sleep 800ms
-
-# Type a summary
-Type "cc"
-Sleep 100ms
-Type "Add keyboard shortcuts help"
+# Create a new issue from scratch buffer
+# Open create issue scratch buffer (more deterministic than Ctrl+C in tapes)
+Type ":e jira-oil://issue/new"
+Enter
+Sleep 2200ms
+Type "gg7j0"
+Sleep 550ms
+Type "iShip polished README demo recording"
 Escape
-Sleep 300ms
+Sleep 1200ms
+Ctrl+S
+Sleep 3400ms
+Type ":e jira-oil://all"
+Enter
+Sleep 2200ms
 
-# Close without saving
-Type "Ctrl+q"
-Sleep 300ms
-
-# Demo: Show help
-# ================
-
+# Show keymap help popup
 Type "g?"
-Sleep 800ms
-
-# Close help
+Sleep 2000ms
 Type "q"
-Sleep 300ms
+Sleep 1100ms
 
-# Demo: Refresh
-# =============
-
-Type "Alt+r"
-Sleep 500ms
-
-# Final view
-Sleep 1000ms
-
-# Quit
-Type "Ctrl+q"
-Sleep 200ms
-Type ":q!"
+# Exit Neovim
+Ctrl+Q
+Sleep 250ms
+Type ":qa!"
 Enter
 Sleep 500ms
