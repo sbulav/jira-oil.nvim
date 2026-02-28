@@ -555,6 +555,24 @@ function M.execute_mutations(buf, mutations)
         if not base_item then
           run_update()
         else
+          local conflict_fields = {}
+          for _, update in ipairs(m.updates or {}) do
+            if update:match("^summary:") then
+              table.insert(conflict_fields, "summary")
+            elseif update:match("^description:") then
+              table.insert(conflict_fields, "description")
+            elseif update:match("^assignee:") then
+              table.insert(conflict_fields, "assignee")
+            elseif update:match("^status:") then
+              table.insert(conflict_fields, "status")
+            end
+          end
+
+          if #conflict_fields == 0 then
+            run_update()
+            return
+          end
+
           cli.get_issue(m.key, function(latest_issue)
             if not latest_issue then
               vim.notify("Skipped " .. m.key .. ": could not verify remote state.", vim.log.levels.WARN)
@@ -565,12 +583,7 @@ function M.execute_mutations(buf, mutations)
 
             local base_snapshot = conflict.snapshot_structured(base_item)
             local latest_snapshot = conflict.snapshot_issue(latest_issue, config.options.epic_field)
-            local has_conflict, fields = conflict.detect_conflicts(base_snapshot, latest_snapshot, {
-              "summary",
-              "description",
-              "assignee",
-              "status",
-            })
+            local has_conflict, fields = conflict.detect_conflicts(base_snapshot, latest_snapshot, conflict_fields)
 
             if has_conflict then
               vim.notify(
