@@ -2,6 +2,7 @@ local config = require("jira-oil.config")
 local cli = require("jira-oil.cli")
 local util = require("jira-oil.util")
 local actions = require("jira-oil.actions")
+local conflict = require("jira-oil.conflict")
 
 local M = {}
 
@@ -860,7 +861,7 @@ function M.save(buf)
 
     cli.exec(args, function(stdout, stderr, code)
       if code ~= 0 then
-        vim.notify("Failed to create issue: " .. (stderr or ""), vim.log.levels.ERROR)
+        cli.notify_error("Failed to create issue", stderr, code)
       else
         local created_key = util.extract_issue_key((stdout or "") .. "\n" .. (stderr or ""))
         if created_key and created_key ~= "" then
@@ -933,7 +934,7 @@ function M.save(buf)
           end
           cli.exec(args, function(_, stderr, code)
             if code ~= 0 then
-              vim.notify("Failed to update " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              cli.notify_error("Failed to update " .. data.key, stderr, code)
               next_cb(true)
             else
               next_cb(false)
@@ -951,7 +952,7 @@ function M.save(buf)
           local function assign_with_value(assignee)
             cli.exec({ "issue", "assign", data.key, assignee }, function(_, stderr, code)
               if code ~= 0 then
-                vim.notify("Failed to update assignee for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+                cli.notify_error("Failed to update assignee for " .. data.key, stderr, code)
                 next_cb(true)
               else
                 next_cb(false)
@@ -988,7 +989,7 @@ function M.save(buf)
         fn = function(next_cb)
           cli.exec({ "issue", "move", data.key, diff.new_status }, function(_, stderr, code)
             if code ~= 0 then
-              vim.notify("Failed to update status for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              cli.notify_error("Failed to update status for " .. data.key, stderr, code)
               next_cb(true)
             else
               next_cb(false)
@@ -1007,7 +1008,7 @@ function M.save(buf)
           fn = function(next_cb)
             cli.exec({ "epic", "remove", data.key }, function(_, stderr, code)
               if code ~= 0 then
-                vim.notify("Failed to remove epic from " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+                cli.notify_error("Failed to remove epic from " .. data.key, stderr, code)
                 next_cb(true)
               else
                 next_cb(false)
@@ -1022,7 +1023,7 @@ function M.save(buf)
           fn = function(next_cb)
             cli.exec({ "epic", "add", diff.new_epic_key, data.key }, function(_, stderr, code)
               if code ~= 0 then
-                vim.notify("Failed to add epic to " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+                cli.notify_error("Failed to add epic to " .. data.key, stderr, code)
                 next_cb(true)
               else
                 next_cb(false)
@@ -1055,7 +1056,7 @@ function M.save(buf)
           end
           cli.exec(args, function(_, stderr, code)
             if code ~= 0 then
-              vim.notify("Failed to update components for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              cli.notify_error("Failed to update components for " .. data.key, stderr, code)
               next_cb(true)
             else
               next_cb(false)
@@ -1073,7 +1074,7 @@ function M.save(buf)
           -- jira issue edit supports --type/-t to change issue type
           cli.exec({ "issue", "edit", data.key, "--no-input", "-t", diff.new_type }, function(_, stderr, code)
             if code ~= 0 then
-              vim.notify("Failed to update type for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              cli.notify_error("Failed to update type for " .. data.key, stderr, code)
               next_cb(true)
             else
               next_cb(false)
@@ -1092,58 +1093,85 @@ function M.save(buf)
       return
     end
 
-    exec_steps(steps, function(has_errors)
-      if has_errors then
-        vim.notify("Some updates failed for " .. data.key .. ". Check messages above.", vim.log.levels.WARN)
-      else
-        -- Update cached original to reflect saved state so re-saving
-        -- without changes correctly reports "no changes to apply"
-        local orig = data.original
-        if not orig.fields then orig.fields = {} end
-        if diff.summary_changed then
-          orig.fields.summary = diff.new_summary
-        end
-        if diff.description_changed then
-          orig.fields.description = diff.new_description
-        end
-        if diff.assignee_changed then
-          if diff.new_assignee == "Unassigned" then
-            orig.fields.assignee = nil
-          else
-            orig.fields.assignee = { displayName = diff.new_assignee }
+    local conflict_fields = {}
+    if diff.summary_changed then table.insert(conflict_fields, "summary") end
+    if diff.description_changed then table.insert(conflict_fields, "description") end
+    if diff.assignee_changed then table.insert(conflict_fields, "assignee") end
+    if diff.status_changed then table.insert(conflict_fields, "status") end
+    if diff.epic_changed then table.insert(conflict_fields, "epic_key") end
+    if diff.components_changed then table.insert(conflict_fields, "components") end
+    if diff.type_changed then table.insert(conflict_fields, "issue_type") end
+
+    cli.get_issue(data.key, function(latest_issue)
+      if not latest_issue then
+        vim.notify("Could not verify remote state for " .. data.key .. ". Save aborted.", vim.log.levels.WARN)
+        return
+      end
+
+      local base_snapshot = conflict.snapshot_issue(data.original, config.options.epic_field)
+      local latest_snapshot = conflict.snapshot_issue(latest_issue, config.options.epic_field)
+      local has_conflict, fields = conflict.detect_conflicts(base_snapshot, latest_snapshot, conflict_fields)
+      if has_conflict then
+        vim.notify(
+          "Remote changes detected for " .. data.key .. " (" .. table.concat(fields, ", ") .. "). Refresh and reapply.",
+          vim.log.levels.WARN
+        )
+        return
+      end
+
+      exec_steps(steps, function(has_errors)
+        if has_errors then
+          vim.notify("Some updates failed for " .. data.key .. ". Check messages above.", vim.log.levels.WARN)
+        else
+          -- Update cached original to reflect saved state so re-saving
+          -- without changes correctly reports "no changes to apply"
+          local orig = data.original
+          if not orig.fields then orig.fields = {} end
+          if diff.summary_changed then
+            orig.fields.summary = diff.new_summary
           end
-        end
-        if diff.status_changed then
-          orig.fields.status = { name = diff.new_status }
-        end
-        if diff.epic_changed then
-          data.epic_key = diff.new_epic_key
-        end
-        if diff.components_changed then
-          local comps = {}
-          for comp in string.gmatch(diff.new_components, "[^,]+") do
-            comp = vim.trim(comp)
-            if comp ~= "" then
-              table.insert(comps, { name = comp })
+          if diff.description_changed then
+            orig.fields.description = diff.new_description
+          end
+          if diff.assignee_changed then
+            if diff.new_assignee == "Unassigned" then
+              orig.fields.assignee = nil
+            else
+              orig.fields.assignee = { displayName = diff.new_assignee }
             end
           end
-          orig.fields.components = comps
-        end
-        if diff.type_changed then
-          local itype = orig.fields.issuetype or orig.fields.issueType
-          if itype then
-            itype.name = diff.new_type
-          else
-            orig.fields.issuetype = { name = diff.new_type }
+          if diff.status_changed then
+            orig.fields.status = { name = diff.new_status }
           end
+          if diff.epic_changed then
+            data.epic_key = diff.new_epic_key
+          end
+          if diff.components_changed then
+            local comps = {}
+            for comp in string.gmatch(diff.new_components, "[^,]+") do
+              comp = vim.trim(comp)
+              if comp ~= "" then
+                table.insert(comps, { name = comp })
+              end
+            end
+            orig.fields.components = comps
+          end
+          if diff.type_changed then
+            local itype = orig.fields.issuetype or orig.fields.issueType
+            if itype then
+              itype.name = diff.new_type
+            else
+              orig.fields.issuetype = { name = diff.new_type }
+            end
+          end
+          vim.notify("Issue " .. data.key .. " updated successfully!", vim.log.levels.INFO)
+          cli.clear_cache("all")
+          M.clear_draft(data.key)
         end
-        vim.notify("Issue " .. data.key .. " updated successfully!", vim.log.levels.INFO)
-        cli.clear_cache("all")
-        M.clear_draft(data.key)
-      end
-      if vim.api.nvim_buf_is_valid(buf) then
-        vim.bo[buf].modified = false
-      end
+        if vim.api.nvim_buf_is_valid(buf) then
+          vim.bo[buf].modified = false
+        end
+      end)
     end)
   end
 end

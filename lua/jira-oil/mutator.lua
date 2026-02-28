@@ -2,6 +2,7 @@ local parser = require("jira-oil.parser")
 local cli = require("jira-oil.cli")
 local config = require("jira-oil.config")
 local util = require("jira-oil.util")
+local conflict = require("jira-oil.conflict")
 
 local M = {}
 
@@ -294,6 +295,13 @@ function M.execute_mutations(buf, mutations)
   local done = 0
   local has_errors = false
   local has_create = false
+  local original_by_key = {}
+
+  for _, item in ipairs((data and data.original) or {}) do
+    if item and item.key and item.key ~= "" then
+      original_by_key[item.key] = item
+    end
+  end
 
   for _, m in ipairs(mutations) do
     if m.type == "CREATE" then
@@ -407,12 +415,12 @@ function M.execute_mutations(buf, mutations)
 
       local status = item.status or ""
       if status ~= "" and status ~= "To Do" and status ~= config.options.defaults.status and key then
-        cli.exec({ "issue", "move", key, status }, function(_, stderr, code)
-          if code ~= 0 then
-            vim.notify("Failed to set status for " .. key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-            has_errors = true
-          end
-          check_done()
+            cli.exec({ "issue", "move", key, status }, function(_, stderr, code)
+              if code ~= 0 then
+                cli.notify_error("Failed to set status for " .. key, stderr, code)
+                has_errors = true
+              end
+              check_done()
         end)
       else
         check_done()
@@ -423,12 +431,12 @@ function M.execute_mutations(buf, mutations)
       if m.type == "CREATE" then
         local function create_with_source(source_issue)
           local args = build_create_args(m.item, source_issue)
-          cli.exec(args, function(stdout, stderr, code)
-            if code ~= 0 then
-              vim.notify("Failed to create issue: " .. (stderr or ""), vim.log.levels.ERROR)
-              has_errors = true
-              check_done()
-              return
+            cli.exec(args, function(stdout, stderr, code)
+              if code ~= 0 then
+                cli.notify_error("Failed to create issue", stderr, code)
+                has_errors = true
+                check_done()
+                return
             end
             after_create_success(m.item, stdout, stderr)
           end)
@@ -445,6 +453,7 @@ function M.execute_mutations(buf, mutations)
           create_with_source(nil)
         end
       elseif m.type == "UPDATE" then
+        local function run_update()
         local summary_changed = false
         local description_changed = false
         local assignee_changed = false
@@ -468,7 +477,7 @@ function M.execute_mutations(buf, mutations)
           end
           cli.exec({ "issue", "move", m.key, m.item.status }, function(_, stderr, code)
             if code ~= 0 then
-              vim.notify("Failed to update status " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              cli.notify_error("Failed to update status " .. m.key, stderr, code)
               has_errors = true
             else
               scratch.clear_draft(m.key)
@@ -486,7 +495,7 @@ function M.execute_mutations(buf, mutations)
           local function assign_with_value(assignee)
             cli.exec({ "issue", "assign", m.key, assignee }, function(_, stderr, code)
               if code ~= 0 then
-                vim.notify("Failed to update assignee " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+                cli.notify_error("Failed to update assignee " .. m.key, stderr, code)
                 has_errors = true
                 do_status(true)
               else
@@ -529,7 +538,7 @@ function M.execute_mutations(buf, mutations)
           end
           cli.exec(args, function(_, stderr, code)
             if code ~= 0 then
-              vim.notify("Failed to update issue " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              cli.notify_error("Failed to update issue " .. m.key, stderr, code)
               has_errors = true
               do_assign(true)
             else
@@ -539,12 +548,49 @@ function M.execute_mutations(buf, mutations)
         else
           do_assign(false)
         end
+        end
+
+        -- Remote conflict check before applying updates.
+        local base_item = original_by_key[m.key]
+        if not base_item then
+          run_update()
+        else
+          cli.get_issue(m.key, function(latest_issue)
+            if not latest_issue then
+              vim.notify("Skipped " .. m.key .. ": could not verify remote state.", vim.log.levels.WARN)
+              has_errors = true
+              check_done()
+              return
+            end
+
+            local base_snapshot = conflict.snapshot_structured(base_item)
+            local latest_snapshot = conflict.snapshot_issue(latest_issue, config.options.epic_field)
+            local has_conflict, fields = conflict.detect_conflicts(base_snapshot, latest_snapshot, {
+              "summary",
+              "description",
+              "assignee",
+              "status",
+            })
+
+            if has_conflict then
+              vim.notify(
+                "Skipped " .. m.key .. ": remote fields changed since open (" .. table.concat(fields, ", ") .. "). Refresh and reapply.",
+                vim.log.levels.WARN
+              )
+              has_errors = true
+              check_done()
+              return
+            end
+
+            run_update()
+          end)
+        end
       elseif m.type == "MOVE" then
         if m.dest == "SPRINT" then
           if sprint_id then
             cli.exec({ "sprint", "add", sprint_id, m.key }, function(stdout, stderr, code)
               if code ~= 0 then
-                vim.notify("Failed to move to sprint " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+                cli.notify_error("Failed to move to sprint " .. m.key, stderr, code)
                 has_errors = true
               end
               check_done()
@@ -555,8 +601,19 @@ function M.execute_mutations(buf, mutations)
             check_done()
           end
         elseif m.dest == "BACKLOG" then
-          vim.notify("Moving to Backlog (removing from Sprint) via jira-cli is not supported yet.", vim.log.levels.WARN)
-          check_done()
+          if sprint_id then
+            cli.exec({ "sprint", "remove", sprint_id, m.key }, function(_, stderr, code)
+              if code ~= 0 then
+                cli.notify_error("Failed to move to backlog " .. m.key, stderr, code)
+                has_errors = true
+              end
+              check_done()
+            end)
+          else
+            vim.notify("Active sprint not found. Cannot move " .. m.key .. " to backlog.", vim.log.levels.WARN)
+            has_errors = true
+            check_done()
+          end
         end
       end
     end
@@ -564,7 +621,7 @@ function M.execute_mutations(buf, mutations)
 
   local needs_sprint_id = false
   for _, m in ipairs(mutations) do
-    if m.type == "MOVE" and m.dest == "SPRINT" then
+    if m.type == "MOVE" and (m.dest == "SPRINT" or m.dest == "BACKLOG") then
       needs_sprint_id = true
       break
     end

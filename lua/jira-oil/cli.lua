@@ -6,6 +6,11 @@ local M = {}
 local response_cache = {}
 local inflight = {}
 local uv = vim.uv or vim.loop
+local is_list = vim.islist or vim.tbl_islist
+
+local function trim(s)
+  return (tostring(s or ""):gsub("^%s*(.-)%s*$", "%1"))
+end
 
 local function now_ms()
   return uv.now()
@@ -134,6 +139,153 @@ local function parse_issue_csv(stdout)
   return issues
 end
 
+local function parse_issue_json(stdout)
+  if not stdout or trim(stdout) == "" then
+    return {}, true
+  end
+
+  local ok, decoded = pcall(vim.json.decode, stdout)
+  if not ok then
+    return nil, false
+  end
+
+  local rows = {}
+  if type(decoded) == "table" then
+    if is_list(decoded) then
+      rows = decoded
+    elseif type(decoded.issues) == "table" and is_list(decoded.issues) then
+      rows = decoded.issues
+    elseif type(decoded.values) == "table" and is_list(decoded.values) then
+      rows = decoded.values
+    elseif decoded.key then
+      rows = { decoded }
+    end
+  end
+
+  local issues = {}
+  for _, raw in ipairs(rows) do
+    local fields = raw.fields or raw
+    local key = raw.key or fields.key or ""
+    if key ~= "" then
+      local status_name = ""
+      if type(fields.status) == "table" then
+        status_name = fields.status.name or ""
+      elseif type(fields.status) == "string" then
+        status_name = fields.status
+      end
+
+      local issue_type_name = ""
+      local issue_type = fields.issuetype or fields.issueType or fields.type
+      if type(issue_type) == "table" then
+        issue_type_name = issue_type.name or ""
+      elseif type(issue_type) == "string" then
+        issue_type_name = issue_type
+      end
+
+      local assignee_name = ""
+      if type(fields.assignee) == "table" then
+        assignee_name = fields.assignee.displayName or fields.assignee.name or ""
+      elseif type(fields.assignee) == "string" then
+        assignee_name = fields.assignee
+      end
+
+      local labels = fields.labels
+      if type(labels) == "table" then
+        labels = table.concat(labels, ",")
+      elseif type(labels) ~= "string" then
+        labels = ""
+      end
+
+      table.insert(issues, {
+        key = key,
+        fields = {
+          status = { name = status_name },
+          issueType = { name = issue_type_name },
+          assignee = { displayName = assignee_name },
+          summary = fields.summary or "",
+          description = fields.description or "",
+          labels = labels,
+          components = fields.components or {},
+          parent = fields.parent,
+        },
+      })
+    end
+  end
+
+  return issues, true
+end
+
+local function classify_error(stderr, code)
+  local msg = trim(stderr)
+  local lower = msg:lower()
+
+  if lower:find("timed out", 1, true) or lower:find("deadline exceeded", 1, true) then
+    return "request timed out; increase jira-oil cli.timeout or narrow your filters"
+  end
+  if lower:find("not found", 1, true) and lower:find("jira", 1, true) then
+    return "jira CLI not found; install jira-cli and set require('jira-oil').setup({ cli = { cmd = 'jira' } })"
+  end
+  if lower:find("unauthorized", 1, true) or lower:find("authentication", 1, true) or lower:find("not logged", 1, true) or lower:find("401", 1, true) then
+    return "authentication failed; run `jira init` and verify credentials"
+  end
+  if lower:find("forbidden", 1, true) or lower:find("permission", 1, true) or lower:find("403", 1, true) then
+    return "permission denied; verify project permissions and issue access"
+  end
+  if code == 124 then
+    return "request timed out; increase jira-oil cli.timeout"
+  end
+  return "jira command failed"
+end
+
+---@param action string
+---@param stderr string|nil
+---@param code number|nil
+---@return string
+function M.format_error(action, stderr, code)
+  local raw = trim(stderr)
+  local hint = classify_error(raw, code)
+  if raw ~= "" then
+    return string.format("%s (%s): %s", action, hint, raw)
+  end
+  return string.format("%s (%s)", action, hint)
+end
+
+---@param action string
+---@param stderr string|nil
+---@param code number|nil
+function M.notify_error(action, stderr, code)
+  vim.notify(M.format_error(action, stderr, code), vim.log.levels.ERROR)
+end
+
+local function list_issues_with_fallback(args_base, csv_columns, cache_scope, ttl_ms, callback)
+  local raw_args = vim.deepcopy(args_base)
+  table.insert(raw_args, "--raw")
+  local raw_cache_key = cache_scope .. ":raw:" .. join_cmd(raw_args)
+
+  exec_cached(raw_cache_key, raw_args, ttl_ms, function(stdout, stderr, code)
+    if code == 0 then
+      local parsed, ok = parse_issue_json(stdout)
+      if ok then
+        callback(parsed)
+        return
+      end
+    end
+
+    local csv_args = vim.deepcopy(args_base)
+    vim.list_extend(csv_args, { "--csv", "--columns", table.concat(csv_columns, ",") })
+    local csv_cache_key = cache_scope .. ":csv:" .. join_cmd(csv_args)
+
+    exec_cached(csv_cache_key, csv_args, ttl_ms, function(csv_stdout, csv_stderr, csv_code)
+      if csv_code ~= 0 then
+        M.notify_error("Error fetching Jira issues", csv_stderr or stderr, csv_code)
+        callback({})
+        return
+      end
+      callback(parse_issue_csv(csv_stdout))
+    end)
+  end)
+end
+
 local function build_jql(base)
   local parts = {}
   if base and base ~= "" then
@@ -226,42 +378,26 @@ end
 ---@param callback function(issues)
 function M.get_sprint_issues(callback)
   local jql = build_jql("sprint in openSprints()")
-  local args = { "issue", "list", "--csv", "--columns", table.concat(config.options.cli.issues.columns, ","), "-q", jql }
+  local args = { "issue", "list", "-q", jql }
   if config.options.defaults.project ~= "" then
     table.insert(args, "-p")
     table.insert(args, config.options.defaults.project)
   end
 
-  local cache_key = "sprint_issues:" .. join_cmd(args)
-  exec_cached(cache_key, args, cache_ttl_ms("sprint_issues", 5000), function(stdout, stderr, code)
-    if code ~= 0 then
-      vim.notify("Error fetching sprint issues: " .. (stderr or ""), vim.log.levels.ERROR)
-      callback({})
-      return
-    end
-    callback(parse_issue_csv(stdout))
-  end)
+  list_issues_with_fallback(args, config.options.cli.issues.columns, "sprint_issues", cache_ttl_ms("sprint_issues", 5000), callback)
 end
 
 ---Fetch backlog issues
 ---@param callback function(issues)
 function M.get_backlog_issues(callback)
   local jql = build_jql("sprint IS EMPTY")
-  local args = { "issue", "list", "--csv", "--columns", table.concat(config.options.cli.issues.columns, ","), "-q", jql }
+  local args = { "issue", "list", "-q", jql }
   if config.options.defaults.project ~= "" then
     table.insert(args, "-p")
     table.insert(args, config.options.defaults.project)
   end
 
-  local cache_key = "backlog_issues:" .. join_cmd(args)
-  exec_cached(cache_key, args, cache_ttl_ms("backlog_issues", 5000), function(stdout, stderr, code)
-    if code ~= 0 then
-      vim.notify("Error fetching backlog issues: " .. (stderr or ""), vim.log.levels.ERROR)
-      callback({})
-      return
-    end
-    callback(parse_issue_csv(stdout))
-  end)
+  list_issues_with_fallback(args, config.options.cli.issues.columns, "backlog_issues", cache_ttl_ms("backlog_issues", 5000), callback)
 end
 
 ---Get an issue
@@ -272,7 +408,7 @@ function M.get_issue(key, callback)
   local cache_key = "issue:" .. key
   exec_cached(cache_key, args, cache_ttl_ms("issue", 15000), function(stdout, stderr, code)
     if code ~= 0 then
-      vim.notify("Error fetching issue: " .. (stderr or ""), vim.log.levels.ERROR)
+      M.notify_error("Error fetching issue", stderr, code)
       callback(nil)
       return
     end
@@ -302,16 +438,8 @@ function M.get_epics(callback)
     vim.list_extend(args, { "--query", epic_cfg.prefill_search })
   end
   local columns = epic_cfg.columns or { "key", "summary" }
-  vim.list_extend(args, { "--csv", "--columns", table.concat(columns, ",") })
 
-  local cache_key = "epics:" .. join_cmd(args)
-  exec_cached(cache_key, args, cache_ttl_ms("epics", 30000), function(stdout, stderr, code)
-    if code ~= 0 then
-      vim.notify("Error fetching epics: " .. (stderr or ""), vim.log.levels.ERROR)
-      callback({})
-      return
-    end
-    local rows = parse_issue_csv(stdout)
+  list_issues_with_fallback(args, columns, "epics", cache_ttl_ms("epics", 30000), function(rows)
     local epics = {}
     for _, issue in ipairs(rows) do
       local key = issue.key or ""
@@ -323,5 +451,7 @@ function M.get_epics(callback)
     callback(epics)
   end)
 end
+
+M._parse_issue_json = parse_issue_json
 
 return M
