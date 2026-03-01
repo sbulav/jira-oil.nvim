@@ -6,7 +6,7 @@ Inspired by [oil.nvim](https://github.com/stevearc/oil.nvim), this plugin gives
 you a virtual "filesystem" for Jira tasks. View issues in a list, edit fields
 inline, and save to dispatch changes. No more switching between browser tabs.
 
-![jira-oil-demo](https://github.com/user-attachments/assets/a1f20638-a77a-4e28-9d0c-501399c27548)
+![jira-oil-demo optimized](https://github.com/user-attachments/assets/fe7dba53-6017-4d99-8e15-dd9fcf4e47ec)
 
 ## Features
 
