@@ -35,16 +35,21 @@ Type ":%s/Alice Chen/Sam Rivera/g"
 Enter
 Sleep 2400ms
 
-# Go to second sprint issue and edit status inline
+# Go to second sprint issue and cycle status inline with +
 Type "j"
 Sleep 550ms
-Type ":s/To Do/In Progress/"
-Enter
+Type "+"
+Sleep 1200ms
+
+# Move issue across sections (Sprint -> Backlog) with <<
+Type "<<"
 Sleep 1800ms
 
-# Move issue across sections (Sprint -> Backlog)
+# Queue an issue for removal (strikethrough visual)
+Type "j"
+Sleep 400ms
 Type "dd"
-Sleep 1800ms
+Sleep 1500ms
 
 # Save list changes and confirm mutation dialog
 Ctrl+S
