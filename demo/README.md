@@ -144,10 +144,8 @@ nix-shell -p nerd-fonts.jetbrains-mono
 ```
 
 ### GIF is too large
-Reduce dimensions and FPS:
-```bash
-agg --font-size 14 --fps 15 demo/demo.cast demo/jira-oil-demo.gif
-```
 
-### Recording is too slow/fast
-Edit timing in `record.tape` or record manually with asciinema.
+- Run gifsicle lossy optimization (usually biggest win):
+    gifsicle -O3 --lossy=80 -k 64 "demo/jira-oil-demo.gif" -o "demo/jira-oil-demo.optimized.gif"
+    - --lossy=60..120 tunes quality/size.
+  - -k 64 limits colors to 64 (try 128 if quality drops too much).
