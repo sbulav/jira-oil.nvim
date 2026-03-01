@@ -151,15 +151,35 @@ local function build_jql(base)
   return table.concat(parts, " AND ")
 end
 
+local active_requests = 0
+
+local function emit_sync_event(event)
+  vim.schedule(function()
+    pcall(vim.api.nvim_exec_autocmds, "User", {
+      pattern = event,
+      modeline = false,
+    })
+  end)
+end
+
 ---Execute a Jira CLI command
 ---@param args table
 ---@param callback function(stdout, stderr, exit_code)
 function M.exec(args, callback)
+  if active_requests == 0 then
+    emit_sync_event("JiraOilSyncStart")
+  end
+  active_requests = active_requests + 1
+
   local cmd = { config.options.cli.cmd }
   vim.list_extend(cmd, args)
 
   vim.system(cmd, { text = true, timeout = config.options.cli.timeout }, function(obj)
     vim.schedule(function()
+      active_requests = active_requests - 1
+      if active_requests == 0 then
+        emit_sync_event("JiraOilSyncEnd")
+      end
       callback(obj.stdout, obj.stderr, obj.code)
     end)
   end)

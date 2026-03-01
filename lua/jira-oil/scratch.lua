@@ -235,6 +235,9 @@ local function apply_issue_decorations(buf)
   end
 
   vim.api.nvim_buf_clear_namespace(buf, M.ns, 0, -1)
+  -- Protect anchor namespace by making it read-only
+  -- vim.api.nvim_buf_set_extmark supports strict=false, readonly=true in nvim 0.10+
+  -- But we need to use a separate namespace and add it to the buf.
 
   local label_width = data.layout.label_width or 12
 
@@ -244,10 +247,13 @@ local function apply_issue_decorations(buf)
       return
     end
     local label = util.pad_right(field .. ":", label_width) .. " "
+    
+    -- In Nvim 0.10+ we can use invalidate = false or similar to keep the label
     vim.api.nvim_buf_set_extmark(buf, M.ns, row - 1, 0, {
       virt_text = { { label, hl or "JiraOilIssueLabel" } },
       virt_text_pos = "inline",
       right_gravity = false,
+      -- strict = false, -- nvim 0.10+ feature
     })
   end
 
@@ -362,16 +368,22 @@ local function render_issue(buf, key, issue, is_new)
   -- by visual decoration refreshes.
   vim.api.nvim_buf_clear_namespace(buf, M.ns_anchor, 0, -1)
   local anchors = M.cache[buf].layout.anchors
-  anchors.project = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 0, 0, { right_gravity = false })
-  anchors.epic = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 1, 0, { right_gravity = false })
-  anchors.type = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 2, 0, { right_gravity = false })
-  anchors.components = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 3, 0, { right_gravity = false })
-  anchors.status = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 4, 0, { right_gravity = false })
-  anchors.assignee = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 5, 0, { right_gravity = false })
-  anchors.divider1 = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 6, 0, { right_gravity = false })
-  anchors.summary = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 7, 0, { right_gravity = false })
-  anchors.divider2 = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 8, 0, { right_gravity = false })
-  anchors.description = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 9, 0, { right_gravity = false })
+  local extmark_opts = { right_gravity = false }
+  
+  if vim.fn.has("nvim-0.10") == 1 then
+     extmark_opts.strict = false
+  end
+
+  anchors.project = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 0, 0, extmark_opts)
+  anchors.epic = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 1, 0, extmark_opts)
+  anchors.type = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 2, 0, extmark_opts)
+  anchors.components = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 3, 0, extmark_opts)
+  anchors.status = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 4, 0, extmark_opts)
+  anchors.assignee = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 5, 0, extmark_opts)
+  anchors.divider1 = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 6, 0, extmark_opts)
+  anchors.summary = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 7, 0, extmark_opts)
+  anchors.divider2 = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 8, 0, extmark_opts)
+  anchors.description = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 9, 0, extmark_opts)
 
   apply_issue_decorations(buf)
   apply_issue_winbar(buf)
@@ -720,7 +732,11 @@ end
 ---@param key string
 ---@return boolean
 function M.has_draft(key)
-  return has_draft_for_key(key)
+  if not key or key == "" then return false end
+  local draft = M.drafts[key]
+  if not draft then return false end
+  if draft.diff and draft.diff.queued_for_removal then return true end
+  return has_any_changes(draft.diff)
 end
 
 ---@param key string
@@ -771,7 +787,12 @@ function M.capture_draft(buf)
 
   local parsed = M.parse_buffer(buf)
   local diff = compute_issue_diff(data, parsed)
-  if has_any_changes(diff) then
+  local old_draft = M.drafts[data.key]
+  if old_draft and old_draft.diff and old_draft.diff.queued_for_removal then
+    diff.queued_for_removal = true
+  end
+
+  if has_any_changes(diff) or diff.queued_for_removal then
     M.drafts[data.key] = {
       parsed = parsed,
       diff = diff,

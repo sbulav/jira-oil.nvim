@@ -415,69 +415,174 @@ M.paste_before = {
   end,
 }
 
-M.move_issue_to_other_section = {
-  desc = "Move issue sprint/backlog",
+M.queue_removal = {
+  desc = "Queue removal from current section",
   callback = function(opts)
     local view = require("jira-oil.view")
+    local scratch = require("jira-oil.scratch")
     local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
     if vim.b[buf].jira_oil_kind ~= "list" then
-      return
-    end
-
-    local data = view.cache[buf]
-    if not data then
       return
     end
 
     local row = vim.api.nvim_win_get_cursor(0)[1] - 1
     local key = view.get_key_at_line(buf, row)
     if not key or key == "" then
-      vim.notify("No Jira issue on current line.", vim.log.levels.WARN)
-      return
-    end
-
-    if data.target ~= "all" then
       vim.cmd.normal({ args = { "dd" }, bang = true })
-      view.decorate_current(buf)
-      vim.notify("Issue removed from current view. Open jira-oil://all to drag between Sprint and Backlog.", vim.log.levels.INFO)
       return
     end
-
-    local lines_before = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-    local moved_line = lines_before[row + 1]
-    if not moved_line then
-      return
-    end
-
-    local from_section = section_for_row(lines_before, row, data.target)
-    local to_section = from_section == "sprint" and "backlog" or "sprint"
-
-    local keys_before = view.get_all_line_keys(buf)
-    local sources_before = view.get_all_copy_sources(buf)
-
-    vim.api.nvim_buf_set_lines(buf, row, row + 1, false, {})
-    local lines_after_delete = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-    local header_row = section_header_row(lines_after_delete, to_section)
-    if header_row == nil then
-      vim.api.nvim_buf_set_lines(buf, row, row, false, { moved_line })
-      view.replace_all_line_keys(buf, keys_before)
-      view.replace_all_copy_sources(buf, sources_before)
-      view.decorate_current(buf)
-      vim.notify("Destination section not found.", vim.log.levels.ERROR)
-      return
-    end
-
-    local insert_row = header_row + 1
-    vim.api.nvim_buf_set_lines(buf, insert_row, insert_row, false, { moved_line })
-
-    local remapped_keys = remap_rows_after_move(keys_before, row, insert_row)
-    local remapped_sources = remap_rows_after_move(sources_before, row, insert_row)
-    view.replace_all_line_keys(buf, remapped_keys)
-    view.replace_all_copy_sources(buf, remapped_sources)
-
-    vim.api.nvim_win_set_cursor(0, { insert_row + 1, 0 })
+    
+    local draft = scratch.peek_draft(key) or { diff = {} }
+    draft.diff.queued_for_removal = not draft.diff.queued_for_removal
+    scratch.drafts[key] = draft
     view.decorate_current(buf)
-    vim.notify("Moved " .. key .. " to " .. (to_section == "sprint" and "Sprint" or "Backlog") .. " [draft]", vim.log.levels.INFO)
+  end,
+}
+
+local function move_issue_to_section(buf, to_section)
+  local view = require("jira-oil.view")
+  if vim.b[buf].jira_oil_kind ~= "list" then return end
+
+  local data = view.cache[buf]
+  if not data then return end
+
+  local row = vim.api.nvim_win_get_cursor(0)[1] - 1
+  local key = view.get_key_at_line(buf, row)
+  if not key or key == "" then
+    vim.notify("No Jira issue on current line.", vim.log.levels.WARN)
+    return
+  end
+
+  if data.target ~= "all" then
+    vim.cmd.normal({ args = { "dd" }, bang = true })
+    view.decorate_current(buf)
+    vim.notify("Issue removed from current view. Open jira-oil://all to drag between Sprint and Backlog.", vim.log.levels.INFO)
+    return
+  end
+
+  local lines_before = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local from_section = section_for_row(lines_before, row, data.target)
+  if from_section == to_section then
+    vim.notify("Issue is already in " .. to_section, vim.log.levels.INFO)
+    return
+  end
+
+  local moved_line = lines_before[row + 1]
+  local keys_before = view.get_all_line_keys(buf)
+  local sources_before = view.get_all_copy_sources(buf)
+
+  vim.api.nvim_buf_set_lines(buf, row, row + 1, false, {})
+  local lines_after_delete = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local header_row = section_header_row(lines_after_delete, to_section)
+  
+  if header_row == nil then
+    vim.api.nvim_buf_set_lines(buf, row, row, false, { moved_line })
+    view.decorate_current(buf)
+    return
+  end
+
+  local insert_row = header_row + 1
+  vim.api.nvim_buf_set_lines(buf, insert_row, insert_row, false, { moved_line })
+
+  local remapped_keys = remap_rows_after_move(keys_before, row, insert_row)
+  local remapped_sources = remap_rows_after_move(sources_before, row, insert_row)
+  view.replace_all_line_keys(buf, remapped_keys)
+  view.replace_all_copy_sources(buf, remapped_sources)
+
+  vim.api.nvim_win_set_cursor(0, { insert_row + 1, 0 })
+  view.decorate_current(buf)
+end
+
+M.move_to_sprint = {
+  desc = "Move issue to sprint",
+  callback = function(opts)
+    local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
+    move_issue_to_section(buf, "sprint")
+  end,
+}
+
+M.move_to_backlog = {
+  desc = "Move issue to backlog",
+  callback = function(opts)
+    local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
+    move_issue_to_section(buf, "backlog")
+  end,
+}
+
+M.cycle_status = {
+  desc = "Cycle status forward",
+  callback = function(opts)
+    local view = require("jira-oil.view")
+    local scratch = require("jira-oil.scratch")
+    local parser = require("jira-oil.parser")
+    local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
+    
+    if vim.b[buf].jira_oil_kind ~= "list" then
+      return
+    end
+
+    local row = vim.api.nvim_win_get_cursor(0)[1] - 1
+    local col = vim.api.nvim_win_get_cursor(0)[2]
+    local line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1]
+    
+    if not line then return end
+    
+    local key = view.get_key_at_line(buf, row)
+    if not key or key == "" then return end
+    
+    local parts = vim.split(line, "│", { plain = true })
+    local current_col_idx = 1
+    local byte_count = 0
+    for i, part in ipairs(parts) do
+      byte_count = byte_count + #part + 3 
+      if col < byte_count then
+        current_col_idx = i
+        break
+      end
+    end
+    
+    local cols = config.options.view.columns
+    local col_name = cols[current_col_idx] and cols[current_col_idx].name
+    
+    if col_name == "status" then
+      local parsed = parser.parse_line(line)
+      if not parsed then return end
+      
+      local current_status = parsed.status
+      local statuses = { "Open", "To Do", "In Progress", "In Review", "Done", "Closed", "Blocked" }
+      local next_idx = 1
+      
+      for i, s in ipairs(statuses) do
+        if s == current_status then
+          next_idx = i + 1
+          if next_idx > #statuses then next_idx = 1 end
+          break
+        end
+      end
+      
+      local new_status = statuses[next_idx]
+      local draft = scratch.peek_draft(key) or { diff = {}, parsed = parsed }
+      draft.parsed.fields = draft.parsed.fields or {}
+      draft.parsed.fields.status = new_status
+      draft.diff.status_changed = true
+      scratch.drafts[key] = draft
+      
+      -- We need to update the line in the buffer
+      local new_parts = vim.split(line, "│", { plain = true })
+      -- Maintain padding
+      local original_part = new_parts[current_col_idx]
+      local icon = require("jira-oil.util").get_icon(config.options.view.status_icons, new_status)
+      local new_val = icon .. new_status
+      local padded = require("jira-oil.util").pad_right(new_val, #original_part)
+      if #padded < #original_part then
+         padded = padded .. string.rep(" ", #original_part - #padded)
+      end
+      new_parts[current_col_idx] = padded
+      
+      local new_line = table.concat(new_parts, "│")
+      vim.api.nvim_buf_set_lines(buf, row, row + 1, false, { new_line })
+      view.decorate_current(buf)
+    end
   end,
 }
 
