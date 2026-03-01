@@ -8,6 +8,8 @@ local M = {}
 function M.setup(opts)
   config.setup(opts)
 
+  pcall(vim.treesitter.language.register, "markdown", "jira-oil-issue")
+
   -- Register autocommands for the virtual filesystem
   local group = vim.api.nvim_create_augroup("JiraOil", { clear = true })
   local draft_capture_seq = {}

@@ -142,7 +142,13 @@ function M.compute_diff(buf)
           local dest = item.section == "backlog" and "BACKLOG" or "SPRINT"
           table.insert(mutations, { type = "MOVE", key = item.key, dest = dest })
         end
-        if eff_status ~= orig.status then table.insert(updates, "status: " .. orig.status .. " -> " .. eff_status) end
+
+        if draft and draft.diff and draft.diff.queued_for_removal then
+          eff_status = "Closed"
+          table.insert(updates, "REMOVE FROM VIEW (Close Issue)")
+        elseif eff_status ~= orig.status then 
+          table.insert(updates, "status: " .. orig.status .. " -> " .. eff_status) 
+        end
         if eff_assignee ~= orig.assignee then table.insert(updates, "assignee: " .. orig.assignee .. " -> " .. eff_assignee) end
         if eff_summary ~= orig.summary then table.insert(updates, "summary: " .. orig.summary .. " -> " .. eff_summary) end
         if eff_description ~= (orig.description or "") then table.insert(updates, "description: [changed]") end
@@ -179,7 +185,12 @@ function M.compute_diff(buf)
           local eff_summary = parsed.summary ~= "" and parsed.summary or orig.summary
           local eff_description = parsed.description or ""
 
-          if eff_status ~= orig.status then table.insert(updates, "status: " .. orig.status .. " -> " .. eff_status) end
+          if draft and draft.diff and draft.diff.queued_for_removal then
+            eff_status = "Closed"
+            table.insert(updates, "REMOVE FROM VIEW (Close Issue)")
+          elseif eff_status ~= orig.status then 
+            table.insert(updates, "status: " .. orig.status .. " -> " .. eff_status) 
+          end
           if eff_assignee ~= orig.assignee then table.insert(updates, "assignee: " .. orig.assignee .. " -> " .. eff_assignee) end
           if eff_summary ~= orig.summary then table.insert(updates, "summary: " .. orig.summary .. " -> " .. eff_summary) end
           if eff_description ~= (orig.description or "") then table.insert(updates, "description: [changed]") end

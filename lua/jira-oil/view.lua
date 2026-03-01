@@ -56,6 +56,10 @@ local function define_highlights()
   hl("JiraOilSectionLabel", { link = "Title" })
   hl("JiraOilSectionCount", { link = "Comment" })
   hl("JiraOilDraft", { link = "Comment" })
+  hl("JiraOilCellChanged", { link = "DiffAdd" })
+  hl("JiraOilSignChanged", { link = "DiffChange" })
+  hl("JiraOilSignRemoved", { link = "DiffDelete" })
+  hl("JiraOilStrikethrough", { link = "DiagnosticVirtualTextError", strikethrough = true })
 
   -- Winbar
   hl("JiraOilWinbar",        { link = "WinBar" })
@@ -182,10 +186,25 @@ local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_c
           right_gravity = false,
         })
 
-        if (draft_keys and draft_keys[key]) or scratch.has_draft(key) then
+        local is_draft = (draft_keys and draft_keys[key]) or scratch.has_draft(key)
+        local scratch_diff = scratch.peek_draft(key) and scratch.peek_draft(key).diff or nil
+        if is_draft then
+          local draft_data = type(draft_keys and draft_keys[key]) == "table" and draft_keys[key] or scratch_diff or {}
+          local virt_text = " [draft]"
+          local sign_text = "~"
+          local sign_hl = "JiraOilSignChanged"
+
+          if draft_data.queued_for_removal then
+             virt_text = " [Queued: Remove from current section]"
+             sign_text = "-"
+             sign_hl = "JiraOilSignRemoved"
+          end
+
           vim.api.nvim_buf_set_extmark(buf, M.ns_draft, row, 0, {
-            virt_text = { { " [draft]", "JiraOilDraft" } },
+            virt_text = { { virt_text, "JiraOilDraft" } },
             virt_text_pos = "eol",
+            sign_text = sign_text,
+            sign_hl_group = sign_hl,
           })
         end
       else
@@ -205,16 +224,27 @@ local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_c
       -- Column highlights on the inline buffer text
       local parts = vim.split(line, sep, { plain = true })
       local start_col = 0
+      local is_draft = (draft_keys and draft_keys[key]) or scratch.has_draft(key)
+      local draft_data = type(is_draft) == "table" and is_draft or {}
+
       for idx, col in ipairs(columns) do
         local part = parts[idx] or ""
         local byte_width = #part
         local hl_group = col_hl[col.name] or "Normal"
-        if col.name == "status" then
+        
+        if draft_data[col.name .. "_changed"] then
+          hl_group = "JiraOilCellChanged"
+        elseif col.name == "status" then
           local status = util.strip_icon(util.trim(part))
           if status ~= "" and status_hl[status] then
             hl_group = status_hl[status]
           end
         end
+        
+        if draft_data.queued_for_removal then
+          hl_group = "JiraOilStrikethrough"
+        end
+
         if byte_width > 0 then
           vim.api.nvim_buf_set_extmark(buf, M.ns, row, start_col, {
             end_col = start_col + byte_width,
@@ -273,7 +303,12 @@ local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_c
 
     local sep_txt = " \u{2502} "
     for _, win in ipairs(vim.fn.win_findbuf(buf)) do
-      local pad = string.rep(" ", gutter_width(win))
+      local textoff = 0
+      local info = vim.fn.getwininfo(win)
+      if info and info[1] and info[1].textoff then
+        textoff = tonumber(info[1].textoff) or 0
+      end
+      local pad = string.rep(" ", textoff)
 
       -- Build a column-aligned winbar so values sit above list columns:
       -- key area -> project, first editable col -> section, last col -> count.
@@ -531,7 +566,7 @@ function M.decorate_current(buf)
       if line:match("%S") then
         if key and key ~= "" then
           if scratch.has_draft(key) then
-            draft_keys[key] = true
+            draft_keys[key] = scratch.peek_draft(key).diff or true
           else
             local parsed = parser.parse_line(line)
             local orig = original_by_key[key]
@@ -539,24 +574,30 @@ function M.decorate_current(buf)
               draft_keys[key] = true
             else
               local current_section = in_backlog and "backlog" or "sprint"
+              local diff = {}
               local changed = false
               if current_section ~= (orig.section or current_section) then
                 changed = true
+                diff.section_changed = true
               end
               if parsed.status ~= nil and parsed.status ~= (orig.status or "") then
                 changed = true
+                diff.status_changed = true
               end
               if parsed.assignee ~= nil and parsed.assignee ~= (orig.assignee or "") then
                 changed = true
+                diff.assignee_changed = true
               end
               if parsed.summary ~= nil and parsed.summary ~= (orig.summary or "") then
                 changed = true
+                diff.summary_changed = true
               end
               if parsed.type ~= nil and parsed.type ~= (orig.type or "") then
                 changed = true
+                diff.type_changed = true
               end
               if changed then
-                draft_keys[key] = true
+                draft_keys[key] = diff
               end
             end
           end
@@ -634,6 +675,7 @@ function M.open(buf, uri)
     }
 
     vim.bo[buf].modifiable = true
+    vim.bo[buf].omnifunc = "v:lua.require('jira-oil.completion').omnifunc"
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.bo[buf].modified = false
     vim.bo[buf].undolevels = old_undolevels
@@ -789,9 +831,22 @@ function M.update_draft_marker_for_key(key)
         for _, row in ipairs(rows) do
           vim.api.nvim_buf_clear_namespace(buf, M.ns_draft, row, row + 1)
           if has_draft then
+            local draft_diff = scratch.peek_draft(key) and scratch.peek_draft(key).diff or {}
+            local virt_text = " [draft]"
+            local sign_text = "~"
+            local sign_hl = "JiraOilSignChanged"
+
+            if draft_diff.queued_for_removal then
+               virt_text = " [Queued: Remove from current section]"
+               sign_text = "-"
+               sign_hl = "JiraOilSignRemoved"
+            end
+
             vim.api.nvim_buf_set_extmark(buf, M.ns_draft, row, 0, {
-              virt_text = { { " [draft]", "JiraOilDraft" } },
+              virt_text = { { virt_text, "JiraOilDraft" } },
               virt_text_pos = "eol",
+              sign_text = sign_text,
+              sign_hl_group = sign_hl,
             })
           end
         end
