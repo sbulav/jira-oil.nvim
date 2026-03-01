@@ -5,7 +5,7 @@ Output demo/jira-oil-demo.gif
 
 Set Shell "bash"
 Set FontSize 18
-Set FontFamily "JetBrains Mono"
+Set FontFamily "CaskaydiaCove Nerd Font Mono"
 Set Padding 12
 Set Width 1300
 Set Height 650
