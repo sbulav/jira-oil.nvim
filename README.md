@@ -23,9 +23,10 @@ inline, and save to dispatch changes. No more switching between browser tabs.
 
 1. Run `:JiraOil` to open sprint and backlog combined
 2. Run `:JiraOil sprint` for sprint only, `:JiraOil backlog` for backlog only
-3. Edit text in the Status or Assignee columns
-4. Press `<C-s>` or `:w` to save. A floating window shows pending mutations
-5. Press `Y` to confirm
+3. Run richer views like `:JiraOil assignee/me`, `:JiraOil project/PROJ`, or `:JiraOil search/login`
+4. Edit text in the Status or Assignee columns
+5. Press `<C-s>` or `:w` to save. A floating window shows pending mutations
+6. Press `Y` to confirm
 
 To edit selected task, press <CR>.
 To create a new task, press <C-c>.
@@ -167,7 +168,15 @@ Use this as a complete starting point. Replace placeholder values (`PROJ`, `TEAM
         ["<C-c>"] = { "actions.create", mode = "n" },
         ["gB"] = { "actions.open_in_browser", mode = "n" },
         ["<C-y>"] = { "actions.yank_issue_key", mode = { "n", "v" } },
-        ["dd"] = { "actions.move_issue_to_other_section", mode = "n" },
+        ["dd"] = { "actions.queue_removal", mode = "n" },
+        [">>"] = { "actions.move_to_sprint", mode = "n" },
+        ["<<"] = { "actions.move_to_backlog", mode = "n" },
+        ["ga"] = { "actions.filter_by_assignee", mode = "n" },
+        ["gS"] = { "actions.filter_by_status", mode = "n" },
+        ["gp"] = { "actions.filter_by_project", mode = "n" },
+        ["g/"] = { "actions.filter_prompt", mode = "n" },
+        ["gu"] = { "actions.clear_filters", mode = "n" },
+        ["-"] = { "actions.parent_view", mode = "n" },
         ["p"] = { "actions.paste_after", mode = "n" },
         ["P"] = { "actions.paste_before", mode = "n" },
         ["<M-r>"] = { "actions.refresh", mode = "n" },
@@ -223,6 +232,16 @@ Use this as a complete starting point. Replace placeholder values (`PROJ`, `TEAM
 
 ### List Buffer (`jira-oil://all`, `jira-oil://sprint`, `jira-oil://backlog`)
 
+List views now support richer URIs and filter parameters:
+
+- `jira-oil://assignee/me`
+- `jira-oil://project/PROJ`
+- `jira-oil://status/In%20Progress`
+- `jira-oil://label/backend`
+- `jira-oil://type/Bug`
+- `jira-oil://search/login`
+- `jira-oil://sprint?assignee=me&status=In%20Progress`
+
 The list buffer shows a fixed-column layout with inline virtual text for issue keys:
 
 ```
@@ -237,6 +256,8 @@ PROJ-102 │ To Do       │ john │ Update README
 - **Copy task**: Yank a line (`yy`), paste (`p` or `P`). The new task copies fields from the source
 - **Move between sprint/backlog**: Press `dd` on an issue in the combined view. It is moved to the opposite section immediately and marked `[draft]` until saved
 - **Open in browser**: `gB` opens the issue in your browser
+- **Pivot the current view**: `ga` filters by assignee, `gS` by status, `gp` by project, `g/` prompts for summary text
+- **Navigate up / clear filters**: `-` opens the parent view, `gu` clears the active filters
 
 ### Scratch Buffer (`jira-oil://issue/PROJ-101`)
 
@@ -283,7 +304,15 @@ Use `gR` to reset drafts and restore original values.
 | `gR` | Reset unsaved changes |
 | `gB` | Open issue in browser |
 | `<C-y>` | Yank issue key (works in visual mode) |
-| `dd` | Move issue between Sprint/Backlog (marks draft) |
+| `dd` | Queue removal from current section |
+| `>>` | Move issue to sprint |
+| `<<` | Move issue to backlog |
+| `ga` | Filter by current assignee |
+| `gS` | Filter by current status |
+| `gp` | Filter by current project |
+| `g/` | Prompt for summary filter |
+| `gu` | Clear active filters |
+| `-` | Open parent view |
 | `p` | Paste task copy after cursor |
 | `P` | Paste task copy before cursor |
 | `<C-q>` | Close buffer |
@@ -370,7 +399,15 @@ require("jira-oil").setup({
     ["<C-c>"] = { "actions.create", mode = "n" },
     ["gB"] = { "actions.open_in_browser", mode = "n" },
     ["<C-y>"] = { "actions.yank_issue_key", mode = { "n", "v" } },
-    ["dd"] = { "actions.move_issue_to_other_section", mode = "n" },
+    ["dd"] = { "actions.queue_removal", mode = "n" },
+    [">>"] = { "actions.move_to_sprint", mode = "n" },
+    ["<<"] = { "actions.move_to_backlog", mode = "n" },
+    ["ga"] = { "actions.filter_by_assignee", mode = "n" },
+    ["gS"] = { "actions.filter_by_status", mode = "n" },
+    ["gp"] = { "actions.filter_by_project", mode = "n" },
+    ["g/"] = { "actions.filter_prompt", mode = "n" },
+    ["gu"] = { "actions.clear_filters", mode = "n" },
+    ["-"] = { "actions.parent_view", mode = "n" },
     ["p"] = { "actions.paste_after", mode = "n" },
     ["P"] = { "actions.paste_before", mode = "n" },
     ["<M-r>"] = { "actions.refresh", mode = "n" },

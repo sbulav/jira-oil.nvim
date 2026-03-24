@@ -27,6 +27,26 @@ M.ns_draft = vim.api.nvim_create_namespace("JiraOilDraftMarker")
 
 M.last_yank = nil
 
+local filter_order = { "project", "assignee", "status", "label", "type", "search" }
+
+local filter_labels = {
+  project = "Project",
+  assignee = "Assignee",
+  status = "Status",
+  label = "Label",
+  type = "Type",
+  search = "Search",
+}
+
+local path_filters = {
+  project = true,
+  assignee = true,
+  status = true,
+  label = true,
+  type = true,
+  search = true,
+}
+
 -- ---------------------------------------------------------------------------
 -- Highlight groups
 -- ---------------------------------------------------------------------------
@@ -259,15 +279,9 @@ local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_c
   -- Winbar
   if config.options.view.show_winbar ~= false then
     local project = config.options.defaults.project
+    local data = M.cache[buf] or {}
     local total = sprint_count + backlog_count
-    local target_label = target
-    if target == "all" then
-      target_label = "Sprint + Backlog"
-    elseif target == "sprint" then
-      target_label = "Sprint"
-    elseif target == "backlog" then
-      target_label = "Backlog"
-    end
+    local target_label = data.view_label or target
     local columns = config.options.view.columns
     local count_text = total .. " issue" .. (total == 1 and "" or "s")
 
@@ -342,6 +356,158 @@ local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_c
       vim.wo[win].winbar = wb
     end
   end
+end
+
+---@param target string|nil
+---@return string
+local function normalize_target(target)
+  if target == "sprint" or target == "backlog" or target == "all" then
+    return target
+  end
+  return "all"
+end
+
+---@param spec table
+---@return string
+local function build_view_label(spec)
+  local target = normalize_target(spec and spec.target)
+  local label = target == "sprint" and "Sprint" or (target == "backlog" and "Backlog" or "Sprint + Backlog")
+  local filters = spec and spec.filters or {}
+  local parts = {}
+  for _, key in ipairs(filter_order) do
+    local value = filters[key]
+    if value and value ~= "" then
+      local display = value
+      if key == "assignee" and (value == "me" or value == "currentUser()") then
+        display = "Me"
+      end
+      table.insert(parts, string.format("%s: %s", filter_labels[key] or key, display))
+    end
+  end
+  if #parts > 0 then
+    label = label .. " · " .. table.concat(parts, " · ")
+  end
+  return label
+end
+
+---@param query string|nil
+---@return table
+local function parse_query_string(query)
+  local out = {}
+  query = query or ""
+  for part in query:gmatch("[^&]+") do
+    local key, value = part:match("^([^=]+)=(.*)$")
+    if key then
+      out[util.uri_decode(key)] = util.uri_decode(value)
+    else
+      out[util.uri_decode(part)] = ""
+    end
+  end
+  return out
+end
+
+---@param spec table
+---@return string
+function M.build_uri(spec)
+  spec = vim.deepcopy(spec or {})
+  spec.target = normalize_target(spec.target)
+  spec.filters = spec.filters or {}
+
+  local active_key = nil
+  local active_value = nil
+  local extra_filters = 0
+  for _, key in ipairs(filter_order) do
+    local value = spec.filters[key]
+    if value and value ~= "" then
+      if not active_key then
+        active_key = key
+        active_value = value
+      else
+        extra_filters = extra_filters + 1
+      end
+    end
+  end
+
+  local base = spec.target
+  local query = {}
+
+  if active_key and extra_filters == 0 and path_filters[active_key] then
+    base = active_key .. "/" .. util.uri_encode(active_value)
+    if spec.target ~= "all" then
+      query.view = spec.target
+    end
+  else
+    base = spec.target
+    for _, key in ipairs(filter_order) do
+      local value = spec.filters[key]
+      if value and value ~= "" then
+        query[key] = value
+      end
+    end
+  end
+
+  local parts = {}
+  local query_order = { "view" }
+  vim.list_extend(query_order, filter_order)
+  for _, key in ipairs(query_order) do
+    local value = query[key]
+    if value and value ~= "" then
+      table.insert(parts, util.uri_encode(key) .. "=" .. util.uri_encode(value))
+    end
+  end
+
+  if #parts > 0 then
+    return "jira-oil://" .. base .. "?" .. table.concat(parts, "&")
+  end
+  return "jira-oil://" .. base
+end
+
+---@param uri string
+---@return table|nil spec
+---@return string|nil err
+function M.parse_uri(uri)
+  local raw = uri:match("^jira%-oil://(.*)$")
+  if not raw then
+    return nil, "Invalid URI: " .. uri
+  end
+
+  local path, query = raw:match("^([^?]*)%??(.*)$")
+  path = util.uri_decode(path or "")
+  local query_items = parse_query_string(query)
+  local spec = {
+    target = normalize_target(query_items.view or query_items.target or path),
+    filters = {},
+  }
+
+  if path == "" then
+    spec.target = "all"
+  elseif path == "all" or path == "sprint" or path == "backlog" then
+    spec.target = path
+  else
+    local name, value = path:match("^([^/]+)/(.+)$")
+    if not name or not path_filters[name] or not value or value == "" then
+      return nil, "Invalid URI: " .. uri
+    end
+    spec.filters[name] = value
+  end
+
+  for _, key in ipairs(filter_order) do
+    if query_items[key] and query_items[key] ~= "" then
+      spec.filters[key] = query_items[key]
+    end
+  end
+
+  spec.view_label = build_view_label(spec)
+  spec.parent_uri = M.build_uri({ target = spec.target, filters = {} })
+  spec.uri = M.build_uri(spec)
+  return spec, nil
+end
+
+---@param buf number
+---@return table|nil
+function M.get_spec(buf)
+  local data = M.cache[buf]
+  return data and data.spec or nil
 end
 
 ---@param issue_keys (string|nil)[]
@@ -618,11 +784,12 @@ end
 ---@param buf number
 ---@param uri string
 function M.open(buf, uri)
-  local target = uri:match("^jira%-oil://(.*)$")
-  if not target or (target ~= "sprint" and target ~= "backlog" and target ~= "all") then
-    vim.notify("Invalid URI: " .. uri, vim.log.levels.ERROR)
+  local spec, err = M.parse_uri(uri)
+  if not spec then
+    vim.notify(err or ("Invalid URI: " .. uri), vim.log.levels.ERROR)
     return
   end
+  local target = spec.target
 
   M.open_seq[buf] = (M.open_seq[buf] or 0) + 1
   local seq = M.open_seq[buf]
@@ -641,7 +808,7 @@ function M.open(buf, uri)
   local old_undolevels = vim.bo[buf].undolevels
   vim.bo[buf].undolevels = -1
 
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Loading " .. target .. "..." })
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Loading " .. spec.view_label .. "..." })
 
   --- Build buffer lines and parallel metadata from a list of issues.
   ---@param issues table[]
@@ -667,11 +834,14 @@ function M.open(buf, uri)
     if is_stale_request() then return end
 
     M.cache[buf] = {
-      uri = uri,
-      target = target,
-      original = structured,
-      rows_by_key = build_rows_by_key(issue_keys),
-      copy_sources = {},
+        uri = uri,
+        spec = spec,
+        target = target,
+        view_label = spec.view_label,
+        parent_uri = spec.parent_uri,
+        original = structured,
+        rows_by_key = build_rows_by_key(issue_keys),
+        copy_sources = {},
     }
 
     vim.bo[buf].modifiable = true
@@ -685,11 +855,11 @@ function M.open(buf, uri)
   end
 
   if target == "all" then
-    cli.get_sprint_issues(function(sprint_issues)
+    cli.get_filtered_issues("sprint", spec.filters, function(sprint_issues)
       if is_stale_request() then
         return
       end
-      cli.get_backlog_issues(function(backlog_issues)
+      cli.get_filtered_issues("backlog", spec.filters, function(backlog_issues)
         if is_stale_request() then
           return
         end
@@ -713,8 +883,7 @@ function M.open(buf, uri)
       end)
     end)
   else
-    local fetcher = target == "sprint" and cli.get_sprint_issues or cli.get_backlog_issues
-    fetcher(function(issues)
+    cli.get_filtered_issues(target, spec.filters, function(issues)
       if is_stale_request() then
         return
       end

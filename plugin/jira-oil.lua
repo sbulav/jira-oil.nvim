@@ -18,9 +18,19 @@ vim.api.nvim_create_user_command("JiraOil", function(args)
   end
   mod.open(target)
 end, {
-  nargs = "?",
+  nargs = "*",
   complete = function()
-    return { "all", "sprint", "backlog" }
+    return {
+      "all",
+      "sprint",
+      "backlog",
+      "project/",
+      "assignee/me",
+      "status/",
+      "label/",
+      "type/",
+      "search/",
+    }
   end,
   desc = "Open Jira Oil buffer",
 })

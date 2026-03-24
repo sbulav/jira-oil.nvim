@@ -6,6 +6,41 @@ local parser = require("jira-oil.parser")
 local M = {}
 
 ---@param buf number
+---@return table|nil
+local function current_view_spec(buf)
+  local view = require("jira-oil.view")
+  local spec = view.get_spec(buf)
+  if spec then
+    return vim.deepcopy(spec)
+  end
+  return nil
+end
+
+---@param buf number
+---@param update fun(spec: table)
+local function reopen_with_spec(buf, update)
+  local view = require("jira-oil.view")
+  local spec = current_view_spec(buf)
+  if not spec then
+    vim.notify("Current buffer is not a Jira list view.", vim.log.levels.WARN)
+    return
+  end
+  update(spec)
+  require("jira-oil").open(view.build_uri(spec))
+end
+
+---@param buf number
+---@return table|nil
+local function current_list_parsed(buf)
+  if vim.b[buf].jira_oil_kind ~= "list" then
+    return nil
+  end
+  local row = vim.api.nvim_win_get_cursor(0)[1] - 1
+  local line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] or ""
+  return parser.parse_line(line)
+end
+
+---@param buf number
 ---@return string|nil
 local function current_issue_key(buf)
   local kind = vim.b[buf].jira_oil_kind
@@ -583,6 +618,111 @@ M.cycle_status = {
       vim.api.nvim_buf_set_lines(buf, row, row + 1, false, { new_line })
       view.decorate_current(buf)
     end
+  end,
+}
+
+M.filter_by_assignee = {
+  desc = "Filter view by current assignee",
+  callback = function(opts)
+    local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
+    local parsed = current_list_parsed(buf)
+    local assignee = parsed and parsed.assignee or ""
+    if assignee == "" then
+      vim.notify("No assignee on current line.", vim.log.levels.WARN)
+      return
+    end
+    reopen_with_spec(buf, function(spec)
+      spec.filters = spec.filters or {}
+      spec.filters.assignee = assignee
+    end)
+  end,
+}
+
+M.filter_by_status = {
+  desc = "Filter view by current status",
+  callback = function(opts)
+    local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
+    local parsed = current_list_parsed(buf)
+    local status = parsed and parsed.status or ""
+    if status == "" then
+      vim.notify("No status on current line.", vim.log.levels.WARN)
+      return
+    end
+    reopen_with_spec(buf, function(spec)
+      spec.filters = spec.filters or {}
+      spec.filters.status = status
+    end)
+  end,
+}
+
+M.filter_by_project = {
+  desc = "Filter view by current project",
+  callback = function(opts)
+    local view = require("jira-oil.view")
+    local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
+    local row = vim.api.nvim_win_get_cursor(0)[1] - 1
+    local key = view.get_key_at_line(buf, row)
+    local project = require("jira-oil.util").issue_project_from_key(key)
+    if not project or project == "" then
+      vim.notify("No Jira project on current line.", vim.log.levels.WARN)
+      return
+    end
+    reopen_with_spec(buf, function(spec)
+      spec.filters = spec.filters or {}
+      spec.filters.project = project
+    end)
+  end,
+}
+
+M.filter_prompt = {
+  desc = "Prompt for text filter",
+  callback = function(opts)
+    local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
+    local current = current_view_spec(buf)
+    if not current then
+      vim.notify("Current buffer is not a Jira list view.", vim.log.levels.WARN)
+      return
+    end
+    vim.ui.input({
+      prompt = "Jira summary filter: ",
+      default = (current.filters and current.filters.search) or "",
+    }, function(value)
+      if value == nil then
+        return
+      end
+      reopen_with_spec(buf, function(spec)
+        spec.filters = spec.filters or {}
+        value = vim.trim(value)
+        if value == "" then
+          spec.filters.search = nil
+        else
+          spec.filters.search = value
+        end
+      end)
+    end)
+  end,
+}
+
+M.clear_filters = {
+  desc = "Clear active view filters",
+  callback = function(opts)
+    local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
+    reopen_with_spec(buf, function(spec)
+      spec.filters = {}
+    end)
+  end,
+}
+
+M.parent_view = {
+  desc = "Open parent Jira view",
+  callback = function(opts)
+    local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
+    local spec = current_view_spec(buf)
+    if not spec then
+      vim.notify("Current buffer is not a Jira list view.", vim.log.levels.WARN)
+      return
+    end
+    require("jira-oil").open(spec.parent_uri or "jira-oil://all")
   end,
 }
 

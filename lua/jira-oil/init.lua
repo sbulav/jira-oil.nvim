@@ -133,7 +133,7 @@ function M.open(uri)
   if not uri:match("^jira%-oil://") then
     uri = "jira-oil://" .. uri
   end
-  vim.cmd.edit(uri)
+  vim.cmd.edit(vim.fn.fnameescape(uri))
 end
 
 return M

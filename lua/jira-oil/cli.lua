@@ -151,6 +151,102 @@ local function build_jql(base)
   return table.concat(parts, " AND ")
 end
 
+---@param value string
+---@return string
+local function quote_jql(value)
+  value = tostring(value or "")
+  value = value:gsub("\\", "\\\\")
+  value = value:gsub('"', '\\"')
+  return '"' .. value .. '"'
+end
+
+---@param filters table|nil
+---@return string[]
+local function build_filter_clauses(filters)
+  filters = filters or {}
+  local clauses = {}
+
+  if filters.assignee and filters.assignee ~= "" then
+    if filters.assignee == "me" or filters.assignee == "currentUser()" then
+      table.insert(clauses, "assignee = currentUser()")
+    else
+      table.insert(clauses, "assignee = " .. quote_jql(filters.assignee))
+    end
+  end
+
+  if filters.status and filters.status ~= "" then
+    table.insert(clauses, "status = " .. quote_jql(filters.status))
+  end
+
+  if filters.search and filters.search ~= "" then
+    table.insert(clauses, "summary ~ " .. quote_jql(filters.search))
+  end
+
+  if filters.label and filters.label ~= "" then
+    table.insert(clauses, "labels = " .. quote_jql(filters.label))
+  end
+
+  if filters.type and filters.type ~= "" then
+    table.insert(clauses, "issuetype = " .. quote_jql(filters.type))
+  end
+
+  if filters.project and filters.project ~= "" then
+    table.insert(clauses, "project = " .. quote_jql(filters.project))
+  end
+
+  return clauses
+end
+
+---@param scope string
+---@param filters table|nil
+---@return string
+local function build_view_jql(scope, filters)
+  local base = nil
+  if scope == "sprint" then
+    base = "sprint in openSprints()"
+  elseif scope == "backlog" then
+    base = "sprint IS EMPTY"
+  end
+
+  local clauses = build_filter_clauses(filters)
+  if #clauses > 0 then
+    local extra = table.concat(clauses, " AND ")
+    if base and base ~= "" then
+      base = base .. " AND " .. extra
+    else
+      base = extra
+    end
+  end
+
+  return build_jql(base)
+end
+
+---@param scope string
+---@param filters table|nil
+---@param callback function(issues)
+local function get_issues(scope, filters, callback)
+  local jql = build_view_jql(scope, filters)
+  local args = { "issue", "list", "--csv", "--columns", table.concat(config.options.cli.issues.columns, ","), "-q", jql }
+  local project = filters and filters.project or ""
+  if project == "" then
+    project = config.options.defaults.project
+  end
+  if project ~= "" then
+    table.insert(args, "-p")
+    table.insert(args, project)
+  end
+
+  local cache_key = scope .. "_issues:" .. join_cmd(args)
+  exec_cached(cache_key, args, cache_ttl_ms(scope .. "_issues", 5000), function(stdout, stderr, code)
+    if code ~= 0 then
+      vim.notify("Error fetching " .. scope .. " issues: " .. (stderr or ""), vim.log.levels.ERROR)
+      callback({})
+      return
+    end
+    callback(parse_issue_csv(stdout))
+  end)
+end
+
 local active_requests = 0
 
 local function emit_sync_event(event)
@@ -245,43 +341,20 @@ end
 ---Fetch current sprint issues
 ---@param callback function(issues)
 function M.get_sprint_issues(callback)
-  local jql = build_jql("sprint in openSprints()")
-  local args = { "issue", "list", "--csv", "--columns", table.concat(config.options.cli.issues.columns, ","), "-q", jql }
-  if config.options.defaults.project ~= "" then
-    table.insert(args, "-p")
-    table.insert(args, config.options.defaults.project)
-  end
-
-  local cache_key = "sprint_issues:" .. join_cmd(args)
-  exec_cached(cache_key, args, cache_ttl_ms("sprint_issues", 5000), function(stdout, stderr, code)
-    if code ~= 0 then
-      vim.notify("Error fetching sprint issues: " .. (stderr or ""), vim.log.levels.ERROR)
-      callback({})
-      return
-    end
-    callback(parse_issue_csv(stdout))
-  end)
+  get_issues("sprint", nil, callback)
 end
 
 ---Fetch backlog issues
 ---@param callback function(issues)
 function M.get_backlog_issues(callback)
-  local jql = build_jql("sprint IS EMPTY")
-  local args = { "issue", "list", "--csv", "--columns", table.concat(config.options.cli.issues.columns, ","), "-q", jql }
-  if config.options.defaults.project ~= "" then
-    table.insert(args, "-p")
-    table.insert(args, config.options.defaults.project)
-  end
+  get_issues("backlog", nil, callback)
+end
 
-  local cache_key = "backlog_issues:" .. join_cmd(args)
-  exec_cached(cache_key, args, cache_ttl_ms("backlog_issues", 5000), function(stdout, stderr, code)
-    if code ~= 0 then
-      vim.notify("Error fetching backlog issues: " .. (stderr or ""), vim.log.levels.ERROR)
-      callback({})
-      return
-    end
-    callback(parse_issue_csv(stdout))
-  end)
+---@param scope string
+---@param filters table|nil
+---@param callback function(issues)
+function M.get_filtered_issues(scope, filters, callback)
+  get_issues(scope, filters, callback)
 end
 
 ---Get an issue

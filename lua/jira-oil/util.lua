@@ -128,4 +128,23 @@ function M.resolve_assignee_for_cli(input, source_assignee)
   return nil
 end
 
+---@param s string|nil
+---@return string
+function M.uri_encode(s)
+  s = tostring(s or "")
+  return (s:gsub("([^%w%-%._~])", function(ch)
+    return string.format("%%%02X", string.byte(ch))
+  end))
+end
+
+---@param s string|nil
+---@return string
+function M.uri_decode(s)
+  s = tostring(s or "")
+  s = s:gsub("+", " ")
+  return (s:gsub("%%(%x%x)", function(hex)
+    return string.char(tonumber(hex, 16))
+  end))
+end
+
 return M
