@@ -312,7 +312,7 @@ local function render_issue(buf, key, issue, is_new)
   end
 
   local assignee = ""
-  if issue.fields and issue.fields.assignee then
+  if issue.fields and type(issue.fields.assignee) == "table" then
     assignee = issue.fields.assignee.displayName or issue.fields.assignee.name or ""
   end
   if assignee == "" then
@@ -327,8 +327,32 @@ local function render_issue(buf, key, issue, is_new)
   local summary = issue.fields and issue.fields.summary or ""
 
   local desc_lines = { "" }
-  if issue.fields and issue.fields.description and issue.fields.description ~= "" then
-    desc_lines = vim.split(issue.fields.description, "\n")
+  if issue.fields and issue.fields.description then
+    local desc = issue.fields.description
+    if type(desc) == "string" and desc ~= "" then
+      desc_lines = vim.split(desc, "\n")
+    elseif type(desc) == "table" then
+      -- Jira ADF (Atlassian Document Format): extract plain text from nested content
+      local function extract_text(node)
+        local out = {}
+        if type(node) ~= "table" then return out end
+        if node.type == "text" and type(node.text) == "string" then
+          table.insert(out, node.text)
+        end
+        if node.type == "hardBreak" then
+          table.insert(out, "\n")
+        end
+        for _, child in ipairs(node.content or {}) do
+          vim.list_extend(out, extract_text(child))
+        end
+        return out
+      end
+      local parts = extract_text(desc)
+      local full = table.concat(parts)
+      if full ~= "" then
+        desc_lines = vim.split(full, "\n")
+      end
+    end
   end
 
   local lines = {
@@ -659,7 +683,7 @@ local function compute_issue_diff(data, parsed)
 
   -- Assignee
   local orig_assignee = ""
-  if orig.fields and orig.fields.assignee then
+  if orig.fields and orig.fields.assignee and type(orig.fields.assignee) == "table" then
     orig_assignee = orig.fields.assignee.displayName or orig.fields.assignee.name or ""
   end
   if orig_assignee == "" then orig_assignee = "Unassigned" end
