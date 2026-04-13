@@ -277,6 +277,27 @@ local function apply_issue_decorations(buf)
   end
 end
 
+local function extract_adf_text(node)
+  local out = {}
+  if type(node) ~= "table" then return out end
+  if node.type == "text" and type(node.text) == "string" then
+    table.insert(out, node.text)
+  end
+  -- Handle block nodes where one CR is enough (e.g. listItem, hardBreak)
+  if node.type == "hardBreak" or node.type == "listItem" then
+    table.insert(out, "\n")
+  end
+  -- Handle block nodes where an empty line would indicate a break:
+  -- paragraph, heading, etc.
+  if node.type == "paragraph" or node.type == "heading" then
+    table.insert(out, "\n\n")
+  end
+  for _, child in ipairs(node.content or {}) do
+    vim.list_extend(out, extract_adf_text(child))
+  end
+  return out
+end
+
 local function render_issue(buf, key, issue, is_new)
   if not vim.api.nvim_buf_is_valid(buf) then return end
 
@@ -332,22 +353,7 @@ local function render_issue(buf, key, issue, is_new)
     if type(desc) == "string" and desc ~= "" then
       desc_lines = vim.split(desc, "\n")
     elseif type(desc) == "table" then
-      -- Jira ADF (Atlassian Document Format): extract plain text from nested content
-      local function extract_text(node)
-        local out = {}
-        if type(node) ~= "table" then return out end
-        if node.type == "text" and type(node.text) == "string" then
-          table.insert(out, node.text)
-        end
-        if node.type == "hardBreak" then
-          table.insert(out, "\n")
-        end
-        for _, child in ipairs(node.content or {}) do
-          vim.list_extend(out, extract_text(child))
-        end
-        return out
-      end
-      local parts = extract_text(desc)
+      local parts = extract_adf_text(desc)
       local full = table.concat(parts)
       if full ~= "" then
         desc_lines = vim.split(full, "\n")
@@ -677,7 +683,13 @@ local function compute_issue_diff(data, parsed)
   changes.new_summary = parsed.summary
 
   -- Description
-  local orig_description = orig.fields and orig.fields.description or ""
+  local orig_description_raw = orig.fields and orig.fields.description or ""
+  local orig_description
+  if type(orig_description_raw) == "table" then
+    orig_description = table.concat(extract_adf_text(orig_description_raw))
+  else
+    orig_description = orig_description_raw
+  end
   changes.description_changed = parsed.description ~= orig_description
   changes.new_description = parsed.description
 
