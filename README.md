@@ -11,11 +11,11 @@ inline, and save to dispatch changes. No more switching between browser tabs.
 ## Features
 
 - **Buffer-as-Jira**: View sprint and backlog as a tabular list in a normal Neovim buffer
-- **Inline Editing**: Change status, reassign, or edit summaries by editing text directly
+- **Inline Editing**: Change status, reassign, edit summaries, and update labels directly
 - **Batch Mutations**: Make multiple changes, save, and confirm before execution
 - **Task Copying**: Yank lines and paste to create new tasks from existing ones
 - **Draft State**: Scratch buffer edits persist as drafts, shown with `[draft]` markers
-- **Scratch Buffers**: Full issue details in a structured buffer with description editing
+- **Scratch Buffers**: Full issue details in a structured buffer with description and labels editing
 - **Epic & Components**: Pick epics and components interactively when editing issues
 - **Icons**: Nerd Font icons for status and issue types
 
@@ -130,6 +130,7 @@ Use this as a complete starting point. Replace placeholder values (`PROJ`, `TEAM
           { name = "status", width = 15 },
           { name = "assignee", width = 15 },
           { name = "summary" },
+          { name = "labels" },
         },
         key_width = 12,
         default_sort = "key",
@@ -268,6 +269,7 @@ Project:     PROJ
 Epic:        PROJ-50: Authentication
 Type:        Task
 Components:  Backend
+Labels:      backend, urgent
 Status:      In Progress
 Assignee:    me
 ──────────────────────────────
@@ -277,7 +279,7 @@ Fix the login bug
 When the user clicks login, it crashes...
 ```
 
-Edit any field, including description. Save to push changes. Drafts are captured automatically and shown in the list buffer with `[draft]`.
+Edit any field, including description and labels. Labels use a comma-separated format such as `backend, urgent`. Save to push changes. Drafts are captured automatically and shown in the list buffer with `[draft]`.
 
 Press `<C-c>` in the list buffer to create a new issue via scratch buffer.
 
@@ -361,6 +363,7 @@ require("jira-oil").setup({
       { name = "status", width = 15 },
       { name = "assignee", width = 15 },
       { name = "summary" },
+      { name = "labels" },
     },
     key_width = 12,
     default_sort = "key",

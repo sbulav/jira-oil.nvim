@@ -5,6 +5,10 @@ local actions = require("jira-oil.actions")
 
 local M = {}
 
+local labels_to_list
+local labels_to_string
+local labels_to_set
+
 M.cache = {}
 M.pending_prefill = nil
 M.pending_existing = {}
@@ -142,6 +146,10 @@ local function apply_row_overrides(issue, row)
     issue.fields.issuetype = { name = row.type }
     issue.fields.issueType = issue.fields.issuetype
   end
+
+  if row.labels ~= nil then
+    issue.fields.labels = labels_to_list(row.labels)
+  end
 end
 
 ---@param issue table
@@ -189,10 +197,7 @@ local function apply_parsed_overrides(issue, parsed)
       issue.fields.components = list
     end
 
-    local lbls = parsed.fields.labels or ""
-    if lbls ~= "" then
-      issue.fields.labels = lbls
-    end
+    issue.fields.labels = labels_to_list(parsed.fields.labels)
   end
 
   issue.fields.description = parsed.description or ""
@@ -215,6 +220,51 @@ local function extract_epic_key(value)
     return ""
   end
   return value:match("([A-Z0-9]+%-%d+)") or ""
+end
+
+---@param value string|string[]|nil
+---@return string[]
+labels_to_list = function(value)
+  local out = {}
+
+  if type(value) == "table" then
+    for _, label in ipairs(value) do
+      label = vim.trim(tostring(label or ""))
+      if label ~= "" then
+        table.insert(out, label)
+      end
+    end
+    return out
+  end
+
+  if type(value) ~= "string" or value == "" then
+    return out
+  end
+
+  for label in string.gmatch(value, "[^,]+") do
+    label = vim.trim(label)
+    if label ~= "" then
+      table.insert(out, label)
+    end
+  end
+
+  return out
+end
+
+---@param value string|string[]|nil
+---@return string
+labels_to_string = function(value)
+  return table.concat(labels_to_list(value), ", ")
+end
+
+---@param value string|string[]|nil
+---@return table<string, boolean>
+labels_to_set = function(value)
+  local set = {}
+  for _, label in ipairs(labels_to_list(value)) do
+    set[label] = true
+  end
+  return set
 end
 
 local function get_field_row(buf, field)
@@ -333,8 +383,7 @@ local function render_issue(buf, key, issue, is_new)
     components = table.concat(names, ", ")
   end
 
-  local labels_raw = issue.fields and issue.fields.labels or ""
-  local labels = type(labels_raw) == "table" and table.concat(labels_raw, ", ") or labels_raw
+  local labels = labels_to_string(issue.fields and issue.fields.labels or "")
 
   local status = issue.fields and issue.fields.status and issue.fields.status.name or ""
   if status == "" then
@@ -753,9 +802,8 @@ local function compute_issue_diff(data, parsed)
   changes.new_type = new_type
 
   -- Labels
-  local orig_labels_raw = orig.fields and orig.fields.labels or ""
-  local orig_labels_str = type(orig_labels_raw) == "table" and table.concat(orig_labels_raw, ", ") or orig_labels_raw
-  local new_labels_str = parsed.fields.labels or ""
+  local orig_labels_str = labels_to_string(orig.fields and orig.fields.labels or "")
+  local new_labels_str = labels_to_string(parsed.fields.labels or "")
   changes.labels_changed = new_labels_str ~= orig_labels_str
   changes.new_labels = new_labels_str
 
@@ -983,6 +1031,7 @@ function M.save(buf)
             end
             data.original.fields.components = comps
           end
+          data.original.fields.labels = labels_to_list(parsed.fields.labels)
           if parsed.fields.project and parsed.fields.project ~= "" then
             data.original.fields.project = { key = parsed.fields.project }
           end
@@ -1176,18 +1225,29 @@ function M.save(buf)
         desc = "update labels",
         fn = function(next_cb)
           local args = { "issue", "edit", data.key, "--no-input" }
-          if diff.new_labels == "" then
-            table.insert(args, "--label")
-            table.insert(args, "")
-          else
-            for lbl in string.gmatch(diff.new_labels, "[^,]+") do
-              lbl = vim.trim(lbl)
-              if lbl ~= "" then
-                table.insert(args, "--label")
-                table.insert(args, lbl)
-              end
+          local orig_labels_set = labels_to_set(data.original and data.original.fields and data.original.fields.labels or nil)
+          local new_labels_list = labels_to_list(diff.new_labels)
+          local new_labels_set = labels_to_set(new_labels_list)
+
+          for label, _ in pairs(orig_labels_set) do
+            if not new_labels_set[label] then
+              table.insert(args, "--label")
+              table.insert(args, "-" .. label)
             end
           end
+
+          for _, label in ipairs(new_labels_list) do
+            if not orig_labels_set[label] then
+              table.insert(args, "--label")
+              table.insert(args, label)
+            end
+          end
+
+          if #args == 4 then
+            next_cb(false)
+            return
+          end
+
           cli.exec(args, function(_, stderr, code)
             if code ~= 0 then
               vim.notify("Failed to update labels for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
@@ -1255,7 +1315,7 @@ function M.save(buf)
           end
         end
         if diff.labels_changed then
-          orig.fields.labels = diff.new_labels
+          orig.fields.labels = labels_to_list(diff.new_labels)
         end
         vim.notify("Issue " .. data.key .. " updated successfully!", vim.log.levels.INFO)
         cli.clear_cache("all")
