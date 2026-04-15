@@ -188,6 +188,11 @@ local function apply_parsed_overrides(issue, parsed)
       end
       issue.fields.components = list
     end
+
+    local lbls = parsed.fields.labels or ""
+    if lbls ~= "" then
+      issue.fields.labels = lbls
+    end
   end
 
   issue.fields.description = parsed.description or ""
@@ -261,6 +266,7 @@ local function apply_issue_decorations(buf)
   add_label("Epic")
   add_label("Type")
   add_label("Components")
+  add_label("Labels")
   add_label("Status")
   add_label("Assignee")
   add_label("Summary")
@@ -327,6 +333,9 @@ local function render_issue(buf, key, issue, is_new)
     components = table.concat(names, ", ")
   end
 
+  local labels_raw = issue.fields and issue.fields.labels or ""
+  local labels = type(labels_raw) == "table" and table.concat(labels_raw, ", ") or labels_raw
+
   local status = issue.fields and issue.fields.status and issue.fields.status.name or ""
   if status == "" then
     status = config.options.defaults.status
@@ -366,6 +375,7 @@ local function render_issue(buf, key, issue, is_new)
     epic,
     (itype and itype.name or config.options.defaults.issue_type),
     components,
+    labels,
     status,
     assignee,
     "",
@@ -408,12 +418,13 @@ local function render_issue(buf, key, issue, is_new)
   anchors.epic = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 1, 0, extmark_opts)
   anchors.type = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 2, 0, extmark_opts)
   anchors.components = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 3, 0, extmark_opts)
-  anchors.status = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 4, 0, extmark_opts)
-  anchors.assignee = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 5, 0, extmark_opts)
-  anchors.divider1 = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 6, 0, extmark_opts)
-  anchors.summary = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 7, 0, extmark_opts)
-  anchors.divider2 = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 8, 0, extmark_opts)
-  anchors.description = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 9, 0, extmark_opts)
+  anchors.labels = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 4, 0, extmark_opts)
+  anchors.status = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 5, 0, extmark_opts)
+  anchors.assignee = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 6, 0, extmark_opts)
+  anchors.divider1 = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 7, 0, extmark_opts)
+  anchors.summary = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 8, 0, extmark_opts)
+  anchors.divider2 = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 9, 0, extmark_opts)
+  anchors.description = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 10, 0, extmark_opts)
 
   apply_issue_decorations(buf)
   apply_issue_winbar(buf)
@@ -619,6 +630,7 @@ function M.parse_buffer(input)
     parsed.fields.epic = get_value("Epic")
     parsed.fields.type = get_value("Type")
     parsed.fields.components = get_value("Components")
+    parsed.fields.labels = get_value("Labels")
     parsed.fields.status = get_value("Status")
     parsed.fields.assignee = get_value("Assignee")
     parsed.summary = get_value("Summary")
@@ -740,6 +752,13 @@ local function compute_issue_diff(data, parsed)
   changes.type_changed = new_type ~= "" and new_type ~= orig_type
   changes.new_type = new_type
 
+  -- Labels
+  local orig_labels_raw = orig.fields and orig.fields.labels or ""
+  local orig_labels_str = type(orig_labels_raw) == "table" and table.concat(orig_labels_raw, ", ") or orig_labels_raw
+  local new_labels_str = parsed.fields.labels or ""
+  changes.labels_changed = new_labels_str ~= orig_labels_str
+  changes.new_labels = new_labels_str
+
   return changes
 end
 
@@ -753,6 +772,7 @@ local function has_any_changes(diff)
     or diff.epic_changed
     or diff.components_changed
     or diff.type_changed
+    or diff.labels_changed
 end
 
 ---@param key string
@@ -906,6 +926,16 @@ function M.save(buf)
         if comp ~= "" then
           table.insert(args, "-C")
           table.insert(args, comp)
+        end
+      end
+    end
+
+    if parsed.fields.labels and parsed.fields.labels ~= "" then
+      for lbl in string.gmatch(parsed.fields.labels, "[^,]+") do
+        lbl = vim.trim(lbl)
+        if lbl ~= "" then
+          table.insert(args, "--label")
+          table.insert(args, lbl)
         end
       end
     end
@@ -1140,6 +1170,36 @@ function M.save(buf)
       })
     end
 
+    -- Step 7: Labels change (only if changed)
+    if diff.labels_changed then
+      table.insert(steps, {
+        desc = "update labels",
+        fn = function(next_cb)
+          local args = { "issue", "edit", data.key, "--no-input" }
+          if diff.new_labels == "" then
+            table.insert(args, "--label")
+            table.insert(args, "")
+          else
+            for lbl in string.gmatch(diff.new_labels, "[^,]+") do
+              lbl = vim.trim(lbl)
+              if lbl ~= "" then
+                table.insert(args, "--label")
+                table.insert(args, lbl)
+              end
+            end
+          end
+          cli.exec(args, function(_, stderr, code)
+            if code ~= 0 then
+              vim.notify("Failed to update labels for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              next_cb(true)
+            else
+              next_cb(false)
+            end
+          end)
+        end,
+      })
+    end
+
     if #steps == 0 then
       vim.notify("No changes to apply.", vim.log.levels.INFO)
       M.clear_draft(data.key)
@@ -1193,6 +1253,9 @@ function M.save(buf)
           else
             orig.fields.issuetype = { name = diff.new_type }
           end
+        end
+        if diff.labels_changed then
+          orig.fields.labels = diff.new_labels
         end
         vim.notify("Issue " .. data.key .. " updated successfully!", vim.log.levels.INFO)
         cli.clear_cache("all")
