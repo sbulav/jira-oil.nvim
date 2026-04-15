@@ -246,8 +246,8 @@ List views now support richer URIs and filter parameters:
 The list buffer shows a fixed-column layout with inline virtual text for issue keys:
 
 ```
-PROJ-101 │ In Progress │ me   │ Fix the login bug
-PROJ-102 │ To Do       │ john │ Update README
+PROJ-101 │ In Progress │ me   │ Fix the login bug  │ backend, urgent
+PROJ-102 │ To Do       │ john │ Update README       │ docs
 ```
 
 **Actions:**

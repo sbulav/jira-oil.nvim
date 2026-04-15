@@ -106,6 +106,10 @@ local function build_issue_from_prefill(prefill, source_issue)
     issue.fields.issueType = issue.fields.issuetype
   end
 
+  if row.labels and row.labels ~= "" then
+    issue.fields.labels = util.labels_to_list(row.labels)
+  end
+
   if not issue.fields.project or not issue.fields.project.key or issue.fields.project.key == "" then
     local source_project = util.issue_project_from_key(prefill and prefill.source_key)
     issue.fields.project = { key = source_project or config.options.defaults.project }

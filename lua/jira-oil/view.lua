@@ -535,6 +535,7 @@ local function format_structured_item(item)
       status = { name = item.status or "" },
       summary = item.summary or "",
       issuetype = { name = item.type or "" },
+      labels = item.labels or "",
     },
   }
   if item.assignee and item.assignee ~= "" and item.assignee ~= "Unassigned" then
@@ -761,6 +762,10 @@ function M.decorate_current(buf)
               if parsed.type ~= nil and parsed.type ~= (orig.type or "") then
                 changed = true
                 diff.type_changed = true
+              end
+              if parsed.labels ~= nil and parsed.labels ~= (orig.labels or "") then
+                changed = true
+                diff.labels_changed = true
               end
               if changed then
                 draft_keys[key] = diff

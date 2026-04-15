@@ -122,6 +122,7 @@ function M.compute_diff(buf)
         local eff_status = item.status
         local eff_assignee = item.assignee
         local eff_summary = item.summary
+        local eff_labels = item.labels or ""
         local eff_description = orig.description or ""
 
         if draft_parsed then
@@ -133,6 +134,9 @@ function M.compute_diff(buf)
           end
           if draft_parsed.summary and draft_parsed.summary ~= "" then
             eff_summary = draft_parsed.summary
+          end
+          if draft_parsed.fields and draft_parsed.fields.labels then
+            eff_labels = util.labels_to_string(draft_parsed.fields.labels)
           end
           eff_description = draft_parsed.description or ""
         end
@@ -146,17 +150,19 @@ function M.compute_diff(buf)
         if draft and draft.diff and draft.diff.queued_for_removal then
           eff_status = "Closed"
           table.insert(updates, "REMOVE FROM VIEW (Close Issue)")
-        elseif eff_status ~= orig.status then 
-          table.insert(updates, "status: " .. orig.status .. " -> " .. eff_status) 
+        elseif eff_status ~= orig.status then
+          table.insert(updates, "status: " .. orig.status .. " -> " .. eff_status)
         end
         if eff_assignee ~= orig.assignee then table.insert(updates, "assignee: " .. orig.assignee .. " -> " .. eff_assignee) end
         if eff_summary ~= orig.summary then table.insert(updates, "summary: " .. orig.summary .. " -> " .. eff_summary) end
+        if eff_labels ~= (orig.labels or "") then table.insert(updates, "labels: " .. (orig.labels or "") .. " -> " .. eff_labels) end
         if eff_description ~= (orig.description or "") then table.insert(updates, "description: [changed]") end
         if #updates > 0 then
           local effective_item = vim.deepcopy(item)
           effective_item.status = eff_status
           effective_item.assignee = eff_assignee
           effective_item.summary = eff_summary
+          effective_item.labels = eff_labels
           effective_item.description = eff_description
           table.insert(mutations, { type = "UPDATE", key = item.key, updates = updates, item = effective_item })
         end
@@ -183,16 +189,18 @@ function M.compute_diff(buf)
           local eff_status = parsed.fields and parsed.fields.status or orig.status
           local eff_assignee = parsed.fields and parsed.fields.assignee or orig.assignee
           local eff_summary = parsed.summary ~= "" and parsed.summary or orig.summary
+          local eff_labels = parsed.fields and parsed.fields.labels and util.labels_to_string(parsed.fields.labels) or (orig.labels or "")
           local eff_description = parsed.description or ""
 
           if draft and draft.diff and draft.diff.queued_for_removal then
             eff_status = "Closed"
             table.insert(updates, "REMOVE FROM VIEW (Close Issue)")
-          elseif eff_status ~= orig.status then 
-            table.insert(updates, "status: " .. orig.status .. " -> " .. eff_status) 
+          elseif eff_status ~= orig.status then
+            table.insert(updates, "status: " .. orig.status .. " -> " .. eff_status)
           end
           if eff_assignee ~= orig.assignee then table.insert(updates, "assignee: " .. orig.assignee .. " -> " .. eff_assignee) end
           if eff_summary ~= orig.summary then table.insert(updates, "summary: " .. orig.summary .. " -> " .. eff_summary) end
+          if eff_labels ~= (orig.labels or "") then table.insert(updates, "labels: " .. (orig.labels or "") .. " -> " .. eff_labels) end
           if eff_description ~= (orig.description or "") then table.insert(updates, "description: [changed]") end
 
           if #updates > 0 then
@@ -201,6 +209,7 @@ function M.compute_diff(buf)
               status = eff_status,
               assignee = eff_assignee,
               summary = eff_summary,
+              labels = eff_labels,
               description = eff_description,
             }
             table.insert(mutations, { type = "UPDATE", key = key, updates = updates, item = item })
@@ -460,14 +469,16 @@ function M.execute_mutations(buf, mutations)
         local description_changed = false
         local assignee_changed = false
         local status_changed = false
+        local labels_changed = false
         for _, update in ipairs(m.updates) do
           if update:match("^summary:") then summary_changed = true end
           if update:match("^description:") then description_changed = true end
           if update:match("^assignee:") then assignee_changed = true end
           if update:match("^status:") then status_changed = true end
+          if update:match("^labels:") then labels_changed = true end
         end
 
-        -- Build sequential chain: summary/description -> assignee -> status
+        -- Build sequential chain: summary/description -> assignee -> labels -> status
         -- Short-circuit on error to avoid inconsistent state
         local function do_status(skip_on_error)
           if skip_on_error or not status_changed then
@@ -488,9 +499,50 @@ function M.execute_mutations(buf, mutations)
           end)
         end
 
+        local function do_labels(skip_on_error)
+          if skip_on_error or not labels_changed then
+            do_status(skip_on_error)
+            return
+          end
+
+          local orig_item = original_by_key[m.key]
+          local orig_labels_set = util.labels_to_set(orig_item and orig_item.labels or nil)
+          local new_labels_list = util.labels_to_list(m.item.labels)
+          local new_labels_set = util.labels_to_set(new_labels_list)
+
+          local args = { "issue", "edit", m.key, "--no-input" }
+          for label, _ in pairs(orig_labels_set) do
+            if not new_labels_set[label] then
+              table.insert(args, "--label")
+              table.insert(args, "-" .. label)
+            end
+          end
+          for _, label in ipairs(new_labels_list) do
+            if not orig_labels_set[label] then
+              table.insert(args, "--label")
+              table.insert(args, label)
+            end
+          end
+
+          if #args == 4 then
+            do_status(false)
+            return
+          end
+
+          cli.exec(args, function(_, stderr, code)
+            if code ~= 0 then
+              vim.notify("Failed to update labels " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+              has_errors = true
+              do_status(true)
+            else
+              do_status(false)
+            end
+          end)
+        end
+
         local function do_assign(skip_on_error)
           if skip_on_error or not assignee_changed then
-            do_status(skip_on_error)
+            do_labels(skip_on_error)
             return
           end
 
@@ -499,9 +551,9 @@ function M.execute_mutations(buf, mutations)
               if code ~= 0 then
                 vim.notify("Failed to update assignee " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
                 has_errors = true
-                do_status(true)
+                do_labels(true)
               else
-                do_status(false)
+                do_labels(false)
               end
             end)
           end
