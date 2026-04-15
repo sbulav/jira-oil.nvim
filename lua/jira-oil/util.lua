@@ -147,4 +147,51 @@ function M.uri_decode(s)
   end))
 end
 
+---@param value string|string[]|nil
+---@return string[]
+function M.labels_to_list(value)
+  local out = {}
+
+  if type(value) == "table" then
+    for _, label in ipairs(value) do
+      label = vim.trim(tostring(label or ""))
+      if label ~= "" then
+        table.insert(out, label)
+      end
+    end
+    table.sort(out)
+    return out
+  end
+
+  if type(value) ~= "string" or value == "" then
+    return out
+  end
+
+  for label in string.gmatch(value, "[^,]+") do
+    label = vim.trim(label)
+    if label ~= "" then
+      table.insert(out, label)
+    end
+  end
+
+  table.sort(out)
+  return out
+end
+
+---@param value string|string[]|nil
+---@return string
+function M.labels_to_string(value)
+  return table.concat(M.labels_to_list(value), ", ")
+end
+
+---@param value string|string[]|nil
+---@return table<string, boolean>
+function M.labels_to_set(value)
+  local set = {}
+  for _, label in ipairs(M.labels_to_list(value)) do
+    set[label] = true
+  end
+  return set
+end
+
 return M

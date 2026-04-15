@@ -34,8 +34,7 @@ function M.format_line(issue)
     elseif col.name == "summary" then
       val = issue.fields and issue.fields.summary or ""
     elseif col.name == "labels" then
-      local raw = issue.fields and issue.fields.labels or ""
-      val = type(raw) == "table" and table.concat(raw, ", ") or raw
+      val = util.labels_to_string(issue.fields and issue.fields.labels)
     elseif col.name == "key" then
       -- Kept for backwards compat if someone adds key back into columns
       val = issue.key or ""
