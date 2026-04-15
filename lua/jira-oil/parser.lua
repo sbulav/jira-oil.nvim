@@ -33,6 +33,9 @@ function M.format_line(issue)
       end
     elseif col.name == "summary" then
       val = issue.fields and issue.fields.summary or ""
+    elseif col.name == "labels" then
+      local raw = issue.fields and issue.fields.labels or ""
+      val = type(raw) == "table" and table.concat(raw, ", ") or raw
     elseif col.name == "key" then
       -- Kept for backwards compat if someone adds key back into columns
       val = issue.key or ""
@@ -82,6 +85,8 @@ function M.parse_line(line)
       else
         parsed.summary = val
       end
+    elseif col.name == "labels" then
+      parsed.labels = val
     elseif col.name == "key" then
       -- Backwards compat: if key is in columns, parse it
       parsed.key = val
