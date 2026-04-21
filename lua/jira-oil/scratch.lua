@@ -1041,7 +1041,15 @@ function M.save(buf)
         desc = "update assignee",
         fn = function(next_cb)
           local function assign_with_value(assignee)
-            cli.exec({ "issue", "assign", data.key, assignee }, function(_, stderr, code)
+            -- Pass --project so that /user/assignable/search includes project=<KEY>,
+            -- which Jira Cloud requires (without it the API returns 400).
+            local project = data.key:match("^([A-Z][A-Z0-9]+)%-%d+$") or ""
+            local cmd = { "issue", "assign", data.key, assignee }
+            if project ~= "" then
+              table.insert(cmd, "--project")
+              table.insert(cmd, project)
+            end
+            cli.exec(cmd, function(_, stderr, code)
               if code ~= 0 then
                 vim.notify("Failed to update assignee for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
                 next_cb(true)
