@@ -547,7 +547,13 @@ function M.execute_mutations(buf, mutations)
           end
 
           local function assign_with_value(assignee)
-            cli.exec({ "issue", "assign", m.key, assignee }, function(_, stderr, code)
+            local project = util.issue_project_from_key(m.key) or ""
+            local cmd = { "issue", "assign", m.key, assignee }
+            if project ~= "" then
+              table.insert(cmd, "--project")
+              table.insert(cmd, project)
+            end
+            cli.exec(cmd, function(_, stderr, code)
               if code ~= 0 then
                 vim.notify("Failed to update assignee " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
                 has_errors = true

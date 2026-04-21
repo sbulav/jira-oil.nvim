@@ -101,7 +101,7 @@ function M.resolve_assignee_for_cli(input, source_assignee)
 
   local src_login = ""
   local src_display = ""
-  if source_assignee then
+  if source_assignee and type(source_assignee) == "table" then
     src_login = source_assignee.name or source_assignee.key or source_assignee.accountId or source_assignee.emailAddress or ""
     src_display = source_assignee.displayName or src_login
   end
