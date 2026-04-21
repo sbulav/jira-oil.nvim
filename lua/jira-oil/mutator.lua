@@ -547,7 +547,7 @@ function M.execute_mutations(buf, mutations)
           end
 
           local function assign_with_value(assignee)
-            local project = m.key:match("^([A-Z][A-Z0-9]+)%-%d+$") or ""
+            local project = util.issue_project_from_key(m.key) or ""
             local cmd = { "issue", "assign", m.key, assignee }
             if project ~= "" then
               table.insert(cmd, "--project")
