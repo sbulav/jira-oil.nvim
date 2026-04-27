@@ -1043,7 +1043,7 @@ function M.save(buf)
           local function assign_with_value(assignee)
             -- Pass --project so that /user/assignable/search includes project=<KEY>,
             -- which Jira Cloud requires (without it the API returns 400).
-            local project = parsed.fields.project or ""
+            local project = util.issue_project_from_key(data.key) or ""
             local cmd = { "issue", "assign", data.key, assignee }
             if project ~= "" then
               table.insert(cmd, "--project")
