@@ -163,6 +163,9 @@ local default_config = {
     issue_type = "Task",
     status = "Open",
   },
+  -- Field(s) on a Jira issue holding the epic link. Accepts a single
+  -- customfield name (e.g. "customfield_10008") or a list of candidates
+  -- tried in order. Leave empty to rely on `fields.parent.key` only.
   epic_field = "",
   create = {
     available_components = {},

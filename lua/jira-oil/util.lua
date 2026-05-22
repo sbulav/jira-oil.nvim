@@ -194,4 +194,44 @@ function M.labels_to_set(value)
   return set
 end
 
+---@param value string|nil
+---@return string
+function M.extract_epic_key(value)
+  if not value or value == "" then
+    return ""
+  end
+  return value:match("([A-Z0-9]+%-%d+)") or ""
+end
+
+---Resolve the epic representation for an issue's fields table.
+---Returns "KEY: summary", "KEY", a raw customfield string, or "".
+---@param fields table|nil
+---@return string
+function M.resolve_epic_from_fields(fields)
+  if not fields then return "" end
+  if fields.parent and fields.parent.key and fields.parent.key ~= "" then
+    local s = fields.parent.key
+    if fields.parent.fields and fields.parent.fields.summary then
+      s = s .. ": " .. fields.parent.fields.summary
+    end
+    return s
+  end
+  local cfg = require("jira-oil.config").options.epic_field
+  local candidates
+  if type(cfg) == "table" then
+    candidates = cfg
+  else
+    candidates = { cfg }
+  end
+  for _, name in ipairs(candidates) do
+    if type(name) == "string" and name ~= "" then
+      local raw = fields[name]
+      if type(raw) == "string" and raw ~= "" then
+        return raw
+      end
+    end
+  end
+  return ""
+end
+
 return M

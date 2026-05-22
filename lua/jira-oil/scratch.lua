@@ -215,12 +215,7 @@ vim.api.nvim_create_autocmd("ColorScheme", {
   callback = define_highlights,
 })
 
-local function extract_epic_key(value)
-  if not value or value == "" then
-    return ""
-  end
-  return value:match("([A-Z0-9]+%-%d+)") or ""
-end
+local extract_epic_key = util.extract_epic_key
 
 
 local function get_field_row(buf, field)
@@ -314,18 +309,7 @@ local function render_issue(buf, key, issue, is_new)
   if not vim.api.nvim_buf_is_valid(buf) then return end
 
   local itype = issue.fields and (issue.fields.issuetype or issue.fields.issueType)
-  local epic = ""
-  if issue.fields and issue.fields.parent and issue.fields.parent.key then
-    epic = issue.fields.parent.key
-    if issue.fields.parent.fields and issue.fields.parent.fields.summary then
-      epic = epic .. ": " .. issue.fields.parent.fields.summary
-    end
-  elseif issue.fields and config.options.epic_field and config.options.epic_field ~= "" then
-    local raw = issue.fields[config.options.epic_field]
-    if type(raw) == "string" and raw ~= "" then
-      epic = raw
-    end
-  end
+  local epic = util.resolve_epic_from_fields(issue.fields)
   local epic_key = extract_epic_key(epic)
 
   local components = ""

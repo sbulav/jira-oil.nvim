@@ -310,6 +310,12 @@ function M.execute_mutations(buf, mutations)
   local view = require("jira-oil.view")
   local scratch = require("jira-oil.scratch")
   local data = view.cache[buf]
+  local original_by_key = {}
+  for _, item in ipairs((data and data.original) or {}) do
+    if item and item.key then
+      original_by_key[item.key] = item
+    end
+  end
   local total = #mutations
   local done = 0
   local has_errors = false
@@ -383,15 +389,7 @@ function M.execute_mutations(buf, mutations)
         table.insert(args, assignee)
       end
 
-      local epic_key = ""
-      if fields and fields.parent and fields.parent.key then
-        epic_key = fields.parent.key
-      elseif fields and config.options.epic_field and config.options.epic_field ~= "" then
-        local raw = fields[config.options.epic_field]
-        if type(raw) == "string" and raw ~= "" then
-          epic_key = raw:match("([A-Z0-9]+%-%d+)") or ""
-        end
-      end
+      local epic_key = util.extract_epic_key(util.resolve_epic_from_fields(fields))
       if epic_key ~= "" then
         table.insert(args, "-P")
         table.insert(args, epic_key)
