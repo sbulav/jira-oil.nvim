@@ -5,6 +5,10 @@ local M = {}
 
 local response_cache = {}
 local inflight = {}
+-- Bumped on every clear_cache() call. Each in-flight request captures the
+-- epoch it started in; requests started before an invalidation must not be
+-- reused for dedup nor allowed to repopulate the cache afterwards.
+local cache_epoch = 0
 local uv = vim.uv or vim.loop
 
 local function now_ms()
@@ -27,6 +31,8 @@ local function join_cmd(args)
 end
 
 local function exec_cached(cache_key, args, ttl_ms, callback)
+  local epoch = cache_epoch
+
   if cache_enabled() and ttl_ms and ttl_ms > 0 then
     local entry = response_cache[cache_key]
     if entry and entry.expires_at > now_ms() then
@@ -37,14 +43,28 @@ local function exec_cached(cache_key, args, ttl_ms, callback)
     end
   end
 
-  if inflight[cache_key] then
-    table.insert(inflight[cache_key], callback)
+  -- Only dedup onto an in-flight request from the current epoch. A request
+  -- started before a clear_cache() must not satisfy a caller that wants fresh
+  -- data after the invalidation.
+  local pending = inflight[cache_key]
+  if pending and pending.epoch == epoch then
+    table.insert(pending.callbacks, callback)
     return
   end
-  inflight[cache_key] = { callback }
+
+  local entry = { epoch = epoch, callbacks = { callback } }
+  inflight[cache_key] = entry
 
   M.exec(args, function(stdout, stderr, code)
-    if cache_enabled() and ttl_ms and ttl_ms > 0 and code == 0 then
+    -- Never strand callbacks: this entry always fires its own waiters, even if
+    -- clear_cache() ran while the request was in flight. Only detach from the
+    -- shared table if we are still the active entry (a newer request for the
+    -- same key may have replaced us after an invalidation).
+    if inflight[cache_key] == entry then
+      inflight[cache_key] = nil
+    end
+
+    if cache_enabled() and ttl_ms and ttl_ms > 0 and code == 0 and entry.epoch == cache_epoch then
       response_cache[cache_key] = {
         stdout = stdout,
         stderr = stderr,
@@ -53,9 +73,7 @@ local function exec_cached(cache_key, args, ttl_ms, callback)
       }
     end
 
-    local waiters = inflight[cache_key] or {}
-    inflight[cache_key] = nil
-    for _, cb in ipairs(waiters) do
+    for _, cb in ipairs(entry.callbacks) do
       cb(stdout, stderr, code)
     end
   end)
@@ -294,22 +312,26 @@ function M.exec_sync(args)
   return obj.stdout, obj.stderr, obj.code
 end
 
+---Invalidate cached responses. Pass nil/"all" to drop everything, or a key
+---prefix to drop a subset. Cache keys are built as "<scope>_issues:...",
+---"issue:<key>", and "epics:..." -- so a prefix like "sprint", "backlog",
+---"issue", or "epics" matches the corresponding entries.
+---
+---In-flight requests are never removed here (that would strand their pending
+---callbacks). Bumping the epoch is enough: in-flight requests started before
+---this call won't be reused for dedup and won't repopulate the cache.
 ---@param scope string|nil
 function M.clear_cache(scope)
+  cache_epoch = cache_epoch + 1
+
   if not scope or scope == "all" then
     response_cache = {}
-    inflight = {}
     return
   end
 
   for key, _ in pairs(response_cache) do
-    if key:match("^" .. scope .. ":") then
+    if key:sub(1, #scope) == scope then
       response_cache[key] = nil
-    end
-  end
-  for key, _ in pairs(inflight) do
-    if key:match("^" .. scope .. ":") then
-      inflight[key] = nil
     end
   end
 end

@@ -219,22 +219,46 @@ function M.compute_diff(buf)
     end
   end
 
+  -- A key that was present originally but no longer appears anywhere in the
+  -- buffer was deleted as raw text (e.g. visual-mode delete). We deliberately
+  -- do NOT infer a section MOVE from this: doing so silently ran `sprint add`
+  -- on deleted backlog lines (adding them to the active sprint) and a no-op
+  -- "unsupported" warning on deleted sprint lines. Section moves must be
+  -- explicit -- relocate the line between Sprint/Backlog in the `all` view
+  -- (handled by the section diff above) or use the removal queue (dd).
+  local removed_keys = {}
   for _, item in ipairs(original) do
     if not current_by_key[item.key] then
-      local from_section = item.section or data.target
-      local dest = from_section == "sprint" and "BACKLOG" or "SPRINT"
-      table.insert(mutations, { type = "MOVE", key = item.key, dest = dest })
+      table.insert(removed_keys, item.key)
     end
   end
+  if #removed_keys > 0 then
+    vim.notify(
+      "Ignored "
+        .. #removed_keys
+        .. " deleted line(s): "
+        .. table.concat(removed_keys, ", ")
+        .. ". Use >> / << in the jira-oil://all view to move between Sprint and Backlog, "
+        .. "or 'dd' to queue an issue for removal.",
+      vim.log.levels.WARN
+    )
+  end
 
-  return mutations
+  return mutations, removed_keys
 end
 
 ---Save view and execute mutations
 ---@param buf number
 function M.save(buf)
-  local mutations = M.compute_diff(buf)
+  local mutations, removed_keys = M.compute_diff(buf)
   if #mutations == 0 then
+    -- Deleted lines produce no mutation (they're intentionally ignored). When a
+    -- deletion is the only edit, restore the buffer from cache so the removed
+    -- line(s) reappear instead of leaving the view out of sync with Jira. When
+    -- there are real mutations, the post-execute refresh already restores them.
+    if removed_keys and #removed_keys > 0 then
+      require("jira-oil.view").reset(buf)
+    end
     vim.notify("No changes to apply.", vim.log.levels.INFO)
     vim.bo[buf].modified = false
     return
