@@ -263,7 +263,7 @@ function M.save(buf)
     -- line(s) reappear instead of leaving the view out of sync with Jira. When
     -- there are real mutations, the post-execute refresh already restores them.
     if removed_keys and #removed_keys > 0 then
-      require("jira-oil.view").reset(buf)
+      require("jira-oil.view").reset(buf, { after_save = true })
     end
     vim.notify("No changes to apply.", vim.log.levels.INFO)
     vim.bo[buf].modified = false
@@ -396,11 +396,11 @@ function M.execute_mutations(buf, mutations)
       if vim.api.nvim_buf_is_valid(buf) then
         vim.bo[buf].modified = false
       end
-      view.refresh(buf)
+      view.refresh(buf, { after_save = true })
       if has_create then
         vim.defer_fn(function()
           if vim.api.nvim_buf_is_valid(buf) then
-            view.refresh(buf)
+            view.refresh(buf, { after_save = true })
           end
         end, 1200)
       end

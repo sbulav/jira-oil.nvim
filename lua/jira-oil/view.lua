@@ -794,9 +794,60 @@ function M.decorate_current(buf)
   data.rows_by_key = build_rows_by_key(issue_keys)
 end
 
+---Keys belonging to this list, including rows deleted since the last load.
+---@param buf number
+---@return table<string, boolean>
+local function list_keys(buf)
+  local keys = {}
+  local data = M.cache[buf]
+  for _, item in ipairs((data and data.original) or {}) do
+    if item.key and item.key ~= "" then
+      keys[item.key] = true
+    end
+  end
+  for _, key in pairs(M.get_all_line_keys(buf)) do
+    keys[key] = true
+  end
+  return keys
+end
+
+---@param buf number
+---@return boolean
+function M.has_pending_changes(buf)
+  if not vim.api.nvim_buf_is_valid(buf) or vim.b[buf].jira_oil_kind ~= "list" then
+    return false
+  end
+  if vim.bo[buf].modified then
+    return true
+  end
+  local scratch = require("jira-oil.scratch")
+  for key in pairs(list_keys(buf)) do
+    if scratch.has_draft(key) then
+      return true
+    end
+  end
+  return false
+end
+
+---Ask before replacing or leaving a list with pending edits. No state changes
+---may happen before this returns true; closing the dialog also cancels.
+---@param buf number
+---@param action string
+---@return boolean
+function M.confirm_discard(buf, action)
+  if not M.has_pending_changes(buf) then
+    return true
+  end
+  return vim.fn.confirm(
+    "This Jira list has unsaved edits, drafts, or queued removals.\n" .. action .. "?",
+    "&Cancel\n&Continue",
+    1
+  ) == 2
+end
+
 ---@param buf number
 ---@param uri string
-function M.open(buf, uri)
+local function load_list(buf, uri)
   local spec, err = M.parse_uri(uri)
   if not spec then
     vim.notify(err or ("Invalid URI: " .. uri), vim.log.levels.ERROR)
@@ -916,20 +967,52 @@ function M.open(buf, uri)
       finish(lines, issue_keys, structured, sc, bc)
     end)
   end
+  return true
 end
 
-function M.refresh(buf)
-  local data = M.cache[buf]
-  if data then
-    cli.clear_cache("all")
-    M.open(buf, data.uri)
+---@param buf number
+---@param uri string
+function M.open(buf, uri)
+  if not M.confirm_discard(buf, "Reload the list and discard its text edits") then
+    return false
   end
+  return load_list(buf, uri)
 end
 
-function M.reset(buf)
+---@param buf number
+---@param opts? {after_save?: boolean}
+function M.refresh(buf, opts)
   local data = M.cache[buf]
   if not data or not vim.api.nvim_buf_is_valid(buf) then
-    return
+    return false
+  end
+  -- The delayed refresh after creating an issue must not discard newer edits
+  -- or interrupt the user with a prompt while they are editing again.
+  if opts and opts.after_save and M.has_pending_changes(buf) then
+    return false
+  end
+  if not M.confirm_discard(buf, "Refresh the list and discard its text edits") then
+    return false
+  end
+  cli.clear_cache("all")
+  return load_list(buf, data.uri)
+end
+
+---@param buf number
+---@param opts? {after_save?: boolean}
+function M.reset(buf, opts)
+  local data = M.cache[buf]
+  if not data or not vim.api.nvim_buf_is_valid(buf) then
+    return false
+  end
+  if not (opts and opts.after_save) then
+    if not M.confirm_discard(buf, "Reset the list and discard its edits and drafts") then
+      return false
+    end
+    local scratch = require("jira-oil.scratch")
+    for key in pairs(list_keys(buf)) do
+      scratch.clear_draft(key)
+    end
   end
 
   local lines = {}
@@ -996,6 +1079,7 @@ function M.reset(buf)
 
   apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, data.target, nil)
   data.rows_by_key = build_rows_by_key(issue_keys)
+  return true
 end
 
 ---@param key string
