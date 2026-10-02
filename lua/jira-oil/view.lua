@@ -25,6 +25,11 @@ M.ns_keys = vim.api.nvim_create_namespace("JiraOilKeys")
 M.ns_copy = vim.api.nvim_create_namespace("JiraOilCopiedSource")
 M.ns_draft = vim.api.nvim_create_namespace("JiraOilDraftMarker")
 
+--- Full issue key per key extmark: buf -> extmark id -> key.  The inline
+--- virt text is truncated to `key_width`, so identity must never be read
+--- back from it.
+M.mark_keys = {}
+
 M.last_yank = nil
 
 local filter_order = { "project", "assignee", "status", "label", "type", "search" }
@@ -115,6 +120,32 @@ local function newtask_placeholder(project)
   return p .. "-NEWTASK"
 end
 
+---@param buf number
+local function clear_key_marks(buf)
+  vim.api.nvim_buf_clear_namespace(buf, M.ns_keys, 0, -1)
+  M.mark_keys[buf] = {}
+end
+
+--- Place the inline key extmark on `row`.  `key` is the issue identity
+--- (nil for new-issue rows); `display` overrides the shown text.
+---@param buf number
+---@param row number 0-indexed
+---@param key string|nil
+---@param display string|nil
+local function place_key_mark(buf, row, key, display)
+  local key_width = config.options.view.key_width or 12
+  local padded = util.pad_right(display or key or "", key_width) .. " "
+  local id = vim.api.nvim_buf_set_extmark(buf, M.ns_keys, row, 0, {
+    virt_text = { { padded, "JiraOilKey" } },
+    virt_text_pos = "inline",
+    right_gravity = false,
+  })
+  if key and key ~= "" then
+    M.mark_keys[buf] = M.mark_keys[buf] or {}
+    M.mark_keys[buf][id] = key
+  end
+end
+
 --- Build a column-aligned section header overlay.
 --- The output accounts for the key virtual-text width so headers line up
 --- with data rows (which have inline virt_text shifting them right).
@@ -165,13 +196,12 @@ local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_c
   local scratch = require("jira-oil.scratch")
 
   vim.api.nvim_buf_clear_namespace(buf, M.ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(buf, M.ns_keys, 0, -1)
+  clear_key_marks(buf)
   vim.api.nvim_buf_clear_namespace(buf, M.ns_draft, 0, -1)
 
   local columns = config.options.view.columns
   local col_hl = config.options.view.column_highlights or {}
   local status_hl = config.options.view.status_highlights or {}
-  local key_width = config.options.view.key_width or 12
   local sections_cfg = config.options.view.sections or {}
 
   local sep = " \u{2502} "
@@ -199,12 +229,7 @@ local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_c
       -- Key virtual text (inline, read-only)
       local key = issue_keys[lnum]
       if key then
-        local padded = util.pad_right(key, key_width) .. " "
-        vim.api.nvim_buf_set_extmark(buf, M.ns_keys, row, 0, {
-          virt_text = { { padded, "JiraOilKey" } },
-          virt_text_pos = "inline",
-          right_gravity = false,
-        })
+        place_key_mark(buf, row, key)
 
         local is_draft = (draft_keys and draft_keys[key]) or scratch.has_draft(key)
         local scratch_diff = scratch.peek_draft(key) and scratch.peek_draft(key).diff or nil
@@ -232,13 +257,7 @@ local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_c
         local source_key = M.get_copy_source_at_line(buf, row)
         local source_project = util.issue_project_from_key(source_key)
         local project = source_project or config.options.defaults.project
-        local placeholder = newtask_placeholder(project)
-        local padded = util.pad_right(placeholder, key_width) .. " "
-        vim.api.nvim_buf_set_extmark(buf, M.ns_keys, row, 0, {
-          virt_text = { { padded, "JiraOilKey" } },
-          virt_text_pos = "inline",
-          right_gravity = false,
-        })
+        place_key_mark(buf, row, nil, newtask_placeholder(project))
       end
 
       -- Column highlights on the inline buffer text
@@ -553,15 +572,12 @@ end
 ---@param row number 0-indexed line number
 ---@return string|nil key
 function M.get_key_at_line(buf, row)
-  local marks = vim.api.nvim_buf_get_extmarks(buf, M.ns_keys, { row, 0 }, { row, 0 }, { details = true })
+  local marks = vim.api.nvim_buf_get_extmarks(buf, M.ns_keys, { row, 0 }, { row, 0 }, {})
+  local by_id = M.mark_keys[buf] or {}
   for _, mark in ipairs(marks) do
-    local details = mark[4] or {}
-    local vt = details.virt_text
-    if vt and vt[1] and vt[1][1] then
-      local key = util.trim(vt[1][1])
-      if key ~= "" and not util.is_newtask_key(key) then
-        return key
-      end
+    local key = by_id[mark[1]]
+    if key then
+      return key
     end
   end
   return nil
@@ -573,15 +589,12 @@ end
 ---@return table<number, string> row_to_key
 function M.get_all_line_keys(buf)
   local row_to_key = {}
-  local marks = vim.api.nvim_buf_get_extmarks(buf, M.ns_keys, 0, -1, { details = true })
+  local marks = vim.api.nvim_buf_get_extmarks(buf, M.ns_keys, 0, -1, {})
+  local by_id = M.mark_keys[buf] or {}
   for _, mark in ipairs(marks) do
-    local details = mark[4] or {}
-    local vt = details.virt_text
-    if vt and vt[1] and vt[1][1] then
-      local key = util.trim(vt[1][1])
-      if key ~= "" and not util.is_newtask_key(key) then
-        row_to_key[mark[2]] = key  -- mark[2] is the 0-indexed row
-      end
+    local key = by_id[mark[1]]
+    if key then
+      row_to_key[mark[2]] = key  -- mark[2] is the 0-indexed row
     end
   end
   return row_to_key
@@ -653,29 +666,23 @@ end
 ---@param row number
 ---@param key string
 function M.set_line_key(buf, row, key)
+  local by_id = M.mark_keys[buf]
+  if by_id then
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, M.ns_keys, { row, 0 }, { row, -1 }, {})) do
+      by_id[mark[1]] = nil
+    end
+  end
   vim.api.nvim_buf_clear_namespace(buf, M.ns_keys, row, row + 1)
-  local key_width = config.options.view.key_width or 12
-  local padded = util.pad_right(key, key_width) .. " "
-  vim.api.nvim_buf_set_extmark(buf, M.ns_keys, row, 0, {
-    virt_text = { { padded, "JiraOilKey" } },
-    virt_text_pos = "inline",
-    right_gravity = false,
-  })
+  place_key_mark(buf, row, key)
 end
 
 ---@param buf number
 ---@param row_to_key table<number, string>
 function M.replace_all_line_keys(buf, row_to_key)
-  vim.api.nvim_buf_clear_namespace(buf, M.ns_keys, 0, -1)
+  clear_key_marks(buf)
   for row, key in pairs(row_to_key or {}) do
     if key and key ~= "" then
-      local key_width = config.options.view.key_width or 12
-      local padded = util.pad_right(key, key_width) .. " "
-      vim.api.nvim_buf_set_extmark(buf, M.ns_keys, row, 0, {
-        virt_text = { { padded, "JiraOilKey" } },
-        virt_text_pos = "inline",
-        right_gravity = false,
-      })
+      place_key_mark(buf, row, key)
     end
   end
 end
