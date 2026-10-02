@@ -305,8 +305,36 @@ local function extract_adf_text(node)
   return out
 end
 
-local function render_issue(buf, key, issue, is_new)
+--- Strip trailing whitespace per line and surrounding blank space, so
+--- whitespace-only differences don't count as description edits.
+---@param text string
+---@return string
+local function normalize_description(text)
+  local lines = vim.split(text or "", "\n", { plain = true })
+  for i, l in ipairs(lines) do
+    lines[i] = l:gsub("%s+$", "")
+  end
+  return util.trim(table.concat(lines, "\n"))
+end
+
+---@param desc any string or ADF document
+---@return string[]
+local function description_lines(desc)
+  if type(desc) == "string" and desc ~= "" then
+    return vim.split(desc, "\n")
+  elseif type(desc) == "table" then
+    local full = table.concat(extract_adf_text(desc)):gsub("^\n+", ""):gsub("\n+$", "")
+    if full ~= "" then
+      return vim.split(full, "\n")
+    end
+  end
+  return { "" }
+end
+
+---@param original table|nil diff baseline; defaults to `issue`
+local function render_issue(buf, key, issue, is_new, original)
   if not vim.api.nvim_buf_is_valid(buf) then return end
+  original = original or issue
 
   local itype = issue.fields and (issue.fields.issuetype or issue.fields.issueType)
   local epic = util.resolve_epic_from_fields(issue.fields)
@@ -345,19 +373,7 @@ local function render_issue(buf, key, issue, is_new)
   local project = issue.fields and issue.fields.project and issue.fields.project.key or config.options.defaults.project
   local summary = issue.fields and issue.fields.summary or ""
 
-  local desc_lines = { "" }
-  if issue.fields and issue.fields.description then
-    local desc = issue.fields.description
-    if type(desc) == "string" and desc ~= "" then
-      desc_lines = vim.split(desc, "\n")
-    elseif type(desc) == "table" then
-      local parts = extract_adf_text(desc)
-      local full = table.concat(parts)
-      if full ~= "" then
-        desc_lines = vim.split(full, "\n")
-      end
-    end
-  end
+  local desc_lines = description_lines(issue.fields and issue.fields.description)
 
   local lines = {
     project,
@@ -385,7 +401,12 @@ local function render_issue(buf, key, issue, is_new)
   M.cache[buf] = {
     key = key,
     is_new = is_new,
-    original = issue,
+    original = original,
+    -- The original description as it renders in the buffer: the baseline for
+    -- change detection, since ADF flattening is lossy.
+    original_description = normalize_description(
+      table.concat(description_lines(original.fields and original.fields.description), "\n")
+    ),
     epic_key = epic_key,
     layout = {
       label_width = 12,
@@ -564,11 +585,14 @@ function M.open(buf, uri)
     local pending = M.pending_existing[key]
     M.pending_existing[key] = nil
     local draft = M.drafts[key]
-    cli.get_issue(key, function(issue)
-      if issue then
+    cli.get_issue(key, function(fetched)
+      if fetched then
+        -- Overrides only affect what is shown; the diff baseline stays the
+        -- issue as fetched so restored drafts still register as changes.
+        local issue = vim.deepcopy(fetched)
         apply_row_overrides(issue, pending and pending.row_fields or nil)
         apply_parsed_overrides(issue, draft and draft.parsed or nil)
-        render_issue(buf, key, issue, false)
+        render_issue(buf, key, issue, false, vim.deepcopy(fetched))
       else
         vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Error loading issue " .. key })
       end
@@ -684,14 +708,15 @@ local function compute_issue_diff(data, parsed)
   changes.new_summary = parsed.summary
 
   -- Description
-  local orig_description_raw = orig.fields and orig.fields.description or ""
-  local orig_description
-  if type(orig_description_raw) == "table" then
-    orig_description = table.concat(extract_adf_text(orig_description_raw))
-  else
-    orig_description = orig_description_raw
+  local orig_description = data.original_description
+  if not orig_description then
+    local raw = orig.fields and orig.fields.description or ""
+    if type(raw) == "table" then
+      raw = table.concat(extract_adf_text(raw))
+    end
+    orig_description = normalize_description(raw)
   end
-  changes.description_changed = parsed.description ~= orig_description
+  changes.description_changed = normalize_description(parsed.description) ~= orig_description
   changes.new_description = parsed.description
 
   -- Assignee
@@ -950,6 +975,7 @@ function M.save(buf)
           end
           data.original.fields.summary = parsed.summary
           data.original.fields.description = parsed.description
+          data.original_description = normalize_description(parsed.description)
           if parsed.fields.assignee and parsed.fields.assignee ~= "" and parsed.fields.assignee ~= "Unassigned" then
             data.original.fields.assignee = { displayName = parsed.fields.assignee }
           else
@@ -1230,6 +1256,7 @@ function M.save(buf)
         end
         if diff.description_changed then
           orig.fields.description = diff.new_description
+          data.original_description = normalize_description(diff.new_description)
         end
         if diff.assignee_changed then
           if diff.new_assignee == "Unassigned" then

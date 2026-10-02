@@ -90,6 +90,7 @@ function M.setup(opts)
     callback = function(args)
       view.cache[args.buf] = nil
       view.open_seq[args.buf] = nil
+      view.mark_keys[args.buf] = nil
       scratch.cache[args.buf] = nil
       draft_capture_seq[args.buf] = nil
       list_decorate_seq[args.buf] = nil

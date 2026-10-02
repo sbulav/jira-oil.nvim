@@ -97,6 +97,22 @@ local function selected_issue_keys(buf)
   return keys
 end
 
+---@param line string
+---@return string|nil
+local function fallback_source_from_last_yank(line)
+  local view = require("jira-oil.view")
+  local yank = view.last_yank
+  if not yank or not yank.entries then
+    return nil
+  end
+  for _, entry in ipairs(yank.entries) do
+    if entry.line == line and entry.source_key and entry.source_key ~= "" then
+      return entry.source_key
+    end
+  end
+  return nil
+end
+
 M.select = {
   desc = "Open Jira issue",
   callback = function()
@@ -293,22 +309,6 @@ local function source_entries_for_paste(pasted_lines, reg)
     out[i] = base
   end
   return out
-end
-
----@param line string
----@return string|nil
-local function fallback_source_from_last_yank(line)
-  local view = require("jira-oil.view")
-  local yank = view.last_yank
-  if not yank or not yank.entries then
-    return nil
-  end
-  for _, entry in ipairs(yank.entries) do
-    if entry.line == line and entry.source_key and entry.source_key ~= "" then
-      return entry.source_key
-    end
-  end
-  return nil
 end
 
 ---@param lines string[]
