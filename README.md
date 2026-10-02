@@ -33,11 +33,61 @@ To create a new task, press <C-c>.
 
 ## Prerequisites
 
-This plugin wraps the official Jira CLI.
+The plugin currently uses Jira CLI for issue reads and most writes. Moving an
+issue back to backlog uses the Jira Software REST API through `curl`.
 
 1. Install [ankitpokhrel/jira-cli](https://github.com/ankitpokhrel/jira-cli)
 2. Authenticate with `jira init`
 3. Verify `jira` works from your terminal
+4. For backlog moves, install `curl` and configure REST authentication below
+
+### REST Backlog Moves
+
+In the combined `jira-oil://all` view, `<<` queues a move to backlog. Save and
+confirm to remove the issue from **all active and future sprints**; completed
+sprint history is retained. Failed requests leave the move queued and keep
+your edits. `>>` continues to use Jira CLI. Section moves are unavailable in
+sprint-only and backlog-only views.
+
+Configure the REST connection in your local setup, using the same server and
+login as your Jira CLI configuration:
+
+```lua
+require("jira-oil").setup({
+  rest = {
+    server = "https://jira.example.com", -- Include /jira if your server uses it
+    login = "your-login",              -- Jira username; account email on Cloud
+    auth_type = "basic",
+    -- Credentials are read from JIRA_API_TOKEN at request time.
+  },
+})
+```
+
+For Data Center Basic auth, `JIRA_API_TOKEN` holds your password. For a Data
+Center personal access token, use `auth_type = "bearer"`; `login` is then
+unnecessary. Ordinary Cloud API tokens use Basic auth with the account email.
+Scoped Cloud tokens require the appropriate gateway base URL, such as
+`https://api.atlassian.com/ex/jira/<cloudId>`, and permissions for the operation.
+
+Empty `server`, `login`, and `auth_type` settings use `JIRA_SERVER`, `JIRA_LOGIN`,
+and `JIRA_AUTH_TYPE` respectively; the default auth type is Basic. Optional
+`rest.token = function() ... end` can return a credential from your own secret
+provider. Keep credentials in your environment/provider, not repository config.
+
+This first REST operation does not automatically read jira-cli's YAML, `.netrc`,
+or OS keyring. Copy only the non-secret server/login/auth settings, or supply
+the corresponding environment variables. mTLS and Cloudflare Access are not
+supported by this transport. `rest.cmd` defaults to `"curl"`, and `rest.timeout`
+defaults to `10000` milliseconds. Credentials travel through curl's stdin,
+not command arguments; requests do not automatically retry or follow redirects.
+A timeout can leave remote state uncertain, so check Jira before retrying it.
+
+Backlog reads include issues with completed sprint history that are outside
+active/future sprints, while retaining your configured filters. This is a
+project/filter-based view, rather than the exact contents of a specific board.
+
+The broader migration is tracked in the
+[REST migration milestone](https://github.com/sbulav/jira-oil.nvim/milestone/1).
 
 ## Installation
 
@@ -123,6 +173,15 @@ Use this as a complete starting point. Replace placeholder values (`PROJ`, `TEAM
           order_by = "status",
           prefill_search = "",
         },
+      },
+
+      rest = {
+        server = "",    -- Or JIRA_SERVER; copy from your local jira-cli config
+        login = "",     -- Or JIRA_LOGIN (required for Basic auth)
+        auth_type = "", -- Or JIRA_AUTH_TYPE; defaults to "basic"
+        cmd = "curl",
+        timeout = 10000,
+        -- token = function() return ... end; defaults to JIRA_API_TOKEN
       },
 
       view = {
@@ -255,7 +314,7 @@ PROJ-102 │ To Do       │ john │ Update README       │ docs
 - **Edit an issue**: Change text directly. "To Do" → "In Progress" queues a status transition
 - **Create inline**: Type a new line with a summary. Empty key column means new task
 - **Copy task**: Yank a line (`yy`), paste (`p` or `P`). The new task copies fields from the source
-- **Move between sprint/backlog**: Press `dd` on an issue in the combined view. It is moved to the opposite section immediately and marked `[draft]` until saved
+- **Move between sprint/backlog**: Use `>>` for sprint or `<<` for backlog in the combined view. The row moves locally and is marked `[draft]` until saved. Backlog moves require REST configuration above
 - **Open in browser**: `gB` opens the issue in your browser
 - **Pivot the current view**: `ga` filters by assignee, `gS` by status, `gp` by project, `g/` prompts for summary text
 - **Navigate up / clear filters**: `-` opens the parent view, `gu` clears the active filters
@@ -357,6 +416,14 @@ require("jira-oil").setup({
       filters = { "-s~done", "-s~closed" },
       order_by = "status",
     },
+  },
+  rest = {
+    server = "",    -- Or JIRA_SERVER; include the server's context path
+    login = "",     -- Or JIRA_LOGIN
+    auth_type = "", -- Or JIRA_AUTH_TYPE; "basic" or "bearer"
+    cmd = "curl",
+    timeout = 10000, -- ms
+    -- token = function() return ... end; defaults to JIRA_API_TOKEN
   },
   view = {
     columns = {
@@ -492,6 +559,8 @@ flowchart TB
         mutator[mutator.lua<br/>Diff + mutation executor]
         parser[parser.lua<br/>List line parse/format]
         cli[cli.lua<br/>jira-cli adapter]
+        jiraclient[jira.lua<br/>Semantic Jira client]
+        rest[rest.lua<br/>JSON HTTP transport]
         cache[(Response cache +<br/>inflight de-dup)]
     end
 
@@ -499,9 +568,11 @@ flowchart TB
         config[config.lua<br/>Options]
         keymap_util[keymap_util.lua<br/>Keymap resolver/help]
         util[util.lua<br/>Helpers]
+        sync[sync.lua<br/>Shared request activity]
     end
 
     jira[(jira CLI binary)]
+    http[(curl / Jira REST API)]
 
     cmd --> init
     init -->|open list URIs| view
@@ -522,6 +593,11 @@ flowchart TB
 
     mutator --> parser
     mutator --> cli
+    mutator -->|backlog moves| jiraclient
+    jiraclient --> rest
+    rest --> http
+    rest --> sync
+    cli --> sync
     mutator --> scratch
     mutator -->|clear cache on writes| cache
     
@@ -529,6 +605,7 @@ flowchart TB
     cli --> jira
     
     config --> cli
+    config --> rest
     config --> mutator
     config --> view
     config --> scratch
@@ -551,6 +628,9 @@ flowchart TB
 | `scratch.lua` | Issue buffer, draft persistence, field pickers |
 | `mutator.lua` | Diff computation, mutation execution |
 | `cli.lua` | Async jira CLI execution, caching |
+| `jira.lua` | Semantic Jira operations; currently REST backlog moves |
+| `rest.lua` | Async JSON requests through curl, authentication, HTTP errors |
+| `sync.lua` | Shared CLI/REST request counter and sync events |
 | `parser.lua` | Line parsing and formatting |
 | `actions.lua` | All keymap callbacks |
 | `config.lua` | Configuration defaults and merge |

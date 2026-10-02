@@ -1,7 +1,17 @@
 ---@class jira-oil.Config
 ---@field cli table
+---@field rest table
 ---@field view table
 local default_config = {
+  rest = {
+    cmd = "curl",
+    timeout = 10000,
+    -- Empty values use JIRA_SERVER / JIRA_LOGIN / JIRA_AUTH_TYPE at request time.
+    server = "",
+    login = "",
+    auth_type = "",
+    -- token: optional function returning a credential; defaults to JIRA_API_TOKEN.
+  },
   cli = {
     cmd = "jira",
     timeout = 10000,

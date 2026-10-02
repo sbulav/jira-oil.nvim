@@ -1,5 +1,6 @@
 local config = require("jira-oil.config")
 local util = require("jira-oil.util")
+local sync = require("jira-oil.sync")
 
 local M = {}
 
@@ -223,7 +224,8 @@ local function build_view_jql(scope, filters)
   if scope == "sprint" then
     base = "sprint in openSprints()"
   elseif scope == "backlog" then
-    base = "sprint IS EMPTY"
+    -- Completed sprint history does not prevent an issue being in backlog.
+    base = "(sprint IS EMPTY OR (sprint NOT IN openSprints() AND sprint NOT IN futureSprints()))"
   end
 
   local clauses = build_filter_clauses(filters)
@@ -265,38 +267,24 @@ local function get_issues(scope, filters, callback)
   end)
 end
 
-local active_requests = 0
-
-local function emit_sync_event(event)
-  vim.schedule(function()
-    pcall(vim.api.nvim_exec_autocmds, "User", {
-      pattern = event,
-      modeline = false,
-    })
-  end)
-end
-
 ---Execute a Jira CLI command
 ---@param args table
 ---@param callback function(stdout, stderr, exit_code)
 function M.exec(args, callback)
-  if active_requests == 0 then
-    emit_sync_event("JiraOilSyncStart")
-  end
-  active_requests = active_requests + 1
-
+  local end_sync = sync.begin()
   local cmd = { config.options.cli.cmd }
   vim.list_extend(cmd, args)
 
-  vim.system(cmd, { text = true, timeout = config.options.cli.timeout }, function(obj)
+  local function finish(obj)
     vim.schedule(function()
-      active_requests = active_requests - 1
-      if active_requests == 0 then
-        emit_sync_event("JiraOilSyncEnd")
-      end
+      end_sync()
       callback(obj.stdout, obj.stderr, obj.code)
     end)
-  end)
+  end
+  local ok = pcall(vim.system, cmd, { text = true, timeout = config.options.cli.timeout }, finish)
+  if not ok then
+    finish({ code = 1, stderr = "Could not start jira-cli; check cli.cmd and that jira is installed." })
+  end
 end
 
 ---Execute a Jira CLI command synchronously

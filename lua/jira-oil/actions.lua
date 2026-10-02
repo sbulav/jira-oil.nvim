@@ -489,9 +489,7 @@ local function move_issue_to_section(buf, to_section)
   end
 
   if data.target ~= "all" then
-    vim.cmd.normal({ args = { "dd" }, bang = true })
-    view.decorate_current(buf)
-    vim.notify("Issue removed from current view. Open jira-oil://all to drag between Sprint and Backlog.", vim.log.levels.INFO)
+    vim.notify("Moving between sections is only available in jira-oil://all.", vim.log.levels.WARN)
     return
   end
 

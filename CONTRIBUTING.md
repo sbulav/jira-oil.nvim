@@ -18,8 +18,10 @@ Use generic placeholders in docs and examples (`PROJ`, `TEAM_JQL`, etc.).
 
 ## Tests
 
-Pure logic (URI build/parse, the line parser, label/assignee helpers) is covered
-by a small headless-Neovim suite. Run it with:
+Pure logic and buffer/save behavior are covered by a small headless-Neovim
+suite. REST integration specs use real `curl` against a local HTTP fixture
+built with Neovim's libuv; they need curl on PATH and never contact live Jira.
+Run the suite with:
 
 ```sh
 make test

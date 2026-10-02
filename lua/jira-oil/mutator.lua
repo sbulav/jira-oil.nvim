@@ -2,6 +2,7 @@ local parser = require("jira-oil.parser")
 local cli = require("jira-oil.cli")
 local config = require("jira-oil.config")
 local util = require("jira-oil.util")
+local jira = require("jira-oil.jira")
 
 local M = {}
 
@@ -277,7 +278,8 @@ function M.save(buf)
     elseif m.type == "UPDATE" then
       table.insert(lines, "[UPDATE] " .. m.key .. ": " .. table.concat(m.updates, ", "))
     elseif m.type == "MOVE" then
-      table.insert(lines, "[MOVE] " .. m.key .. " to " .. m.dest)
+      local detail = m.dest == "BACKLOG" and " (remove from active/future sprints)" or ""
+      table.insert(lines, "[MOVE] " .. m.key .. " to " .. m.dest .. detail)
     end
   end
   table.insert(lines, "")
@@ -381,10 +383,10 @@ function M.execute_mutations(buf, mutations)
         orig.summary = m.item.summary
         orig.labels = m.item.labels
       end
-    elseif m.type == "MOVE" and m.dest == "SPRINT" then
+    elseif m.type == "MOVE" then
       local orig = original_by_key[m.key]
       if orig then
-        orig.section = "sprint"
+        orig.section = m.dest == "BACKLOG" and "backlog" or "sprint"
       end
     end
   end
@@ -703,8 +705,12 @@ function M.execute_mutations(buf, mutations)
             finish(false)
           end
         elseif m.dest == "BACKLOG" then
-          vim.notify("Moving to Backlog (removing from Sprint) via jira-cli is not supported yet.", vim.log.levels.WARN)
-          finish(true)
+          jira.move_to_backlog(m.key, function(err)
+            if err then
+              vim.notify("Failed to move " .. m.key .. " to backlog: " .. err.message, vim.log.levels.ERROR)
+            end
+            finish(err == nil)
+          end)
         end
       end
     end
