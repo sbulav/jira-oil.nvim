@@ -124,6 +124,9 @@ function M.compute_diff(buf)
         local eff_summary = item.summary
         local eff_labels = item.labels or ""
         local eff_description = orig.description or ""
+        -- List rows carry no description, so only the draft's own diff can
+        -- say whether the description was edited.
+        local description_changed = false
 
         if draft_parsed then
           if draft_parsed.fields and draft_parsed.fields.status and draft_parsed.fields.status ~= "" then
@@ -138,7 +141,10 @@ function M.compute_diff(buf)
           if draft_parsed.fields and draft_parsed.fields.labels then
             eff_labels = util.labels_to_string(draft_parsed.fields.labels)
           end
-          eff_description = draft_parsed.description or ""
+          if draft.diff and draft.diff.description_changed then
+            eff_description = draft_parsed.description or ""
+            description_changed = true
+          end
         end
 
         local updates = {}
@@ -156,7 +162,7 @@ function M.compute_diff(buf)
         if eff_assignee ~= orig.assignee then table.insert(updates, "assignee: " .. orig.assignee .. " -> " .. eff_assignee) end
         if eff_summary ~= orig.summary then table.insert(updates, "summary: " .. orig.summary .. " -> " .. eff_summary) end
         if eff_labels ~= (orig.labels or "") then table.insert(updates, "labels: " .. (orig.labels or "") .. " -> " .. eff_labels) end
-        if eff_description ~= (orig.description or "") then table.insert(updates, "description: [changed]") end
+        if description_changed then table.insert(updates, "description: [changed]") end
         if #updates > 0 then
           local effective_item = vim.deepcopy(item)
           effective_item.status = eff_status
@@ -201,7 +207,7 @@ function M.compute_diff(buf)
           if eff_assignee ~= orig.assignee then table.insert(updates, "assignee: " .. orig.assignee .. " -> " .. eff_assignee) end
           if eff_summary ~= orig.summary then table.insert(updates, "summary: " .. orig.summary .. " -> " .. eff_summary) end
           if eff_labels ~= (orig.labels or "") then table.insert(updates, "labels: " .. (orig.labels or "") .. " -> " .. eff_labels) end
-          if eff_description ~= (orig.description or "") then table.insert(updates, "description: [changed]") end
+          if draft.diff and draft.diff.description_changed then table.insert(updates, "description: [changed]") end
 
           if #updates > 0 then
             local item = {
