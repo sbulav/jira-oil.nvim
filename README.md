@@ -579,6 +579,19 @@ create = {
 
 Install a [Nerd Font](https://www.nerdfonts.com/) and configure your terminal to use it.
 
+## Development
+
+Run the headless test suite (no plugins or user config are loaded):
+
+```sh
+make test
+# or, without make:
+nvim --clean -l tests/run.lua
+```
+
+Specs live in `tests/*_spec.lua` and are picked up automatically. CI runs the
+same command on Neovim stable and nightly for every push and pull request.
+
 ## License
 
 MIT
