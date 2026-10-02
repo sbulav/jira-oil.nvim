@@ -347,8 +347,6 @@ function M.execute_mutations(buf, mutations)
     end
   end
   local total = #mutations
-  local done = 0
-  local has_errors = false
   local has_create = false
 
   for _, m in ipairs(mutations) do
@@ -358,16 +356,43 @@ function M.execute_mutations(buf, mutations)
     end
   end
 
-  local function check_done()
-    done = done + 1
-    if done >= total then
-      cli.clear_cache("all")
-      if not has_errors then
-        vim.notify("All changes applied successfully!", vim.log.levels.INFO)
-      else
-        vim.notify("Some changes failed. Check messages above.", vim.log.levels.WARN)
+  -- Mutations run one at a time and stop at the first failure. Each success
+  -- is folded into the cached baseline so that, while the buffer keeps the
+  -- unapplied edits, a re-save only retries what is left (and never repeats
+  -- a CREATE that already went through).
+  local function fold_into_baseline(m)
+    if not data then
+      return
+    end
+    if m.type == "CREATE" then
+      local item = vim.deepcopy(m.item)
+      item.key = m.created_key
+      item.is_new, item.row, item.source_key = nil, nil, nil
+      if m.status_failed then
+        item.status = config.options.defaults.status or "To Do"
       end
-      -- Always reset modified and refresh, even on partial failure
+      table.insert(data.original, item)
+      original_by_key[item.key] = item
+    elseif m.type == "UPDATE" then
+      local orig = original_by_key[m.key]
+      if orig then
+        orig.status = m.item.status
+        orig.assignee = m.item.assignee
+        orig.summary = m.item.summary
+        orig.labels = m.item.labels
+      end
+    elseif m.type == "MOVE" and m.dest == "SPRINT" then
+      local orig = original_by_key[m.key]
+      if orig then
+        orig.section = "sprint"
+      end
+    end
+  end
+
+  local function finish_all(applied, failed_at)
+    cli.clear_cache("all")
+    if not failed_at then
+      vim.notify("All changes applied successfully!", vim.log.levels.INFO)
       if vim.api.nvim_buf_is_valid(buf) then
         vim.bo[buf].modified = false
       end
@@ -379,7 +404,19 @@ function M.execute_mutations(buf, mutations)
           end
         end, 1200)
       end
+      return
     end
+    local skipped = total - failed_at
+    vim.notify(
+      string.format(
+        "Stopped at the first failure: %d of %d changes applied, %d not attempted. "
+          .. "Your edits are kept; fix the failing one and :w to retry the rest.",
+        applied,
+        total,
+        skipped
+      ),
+      vim.log.levels.WARN
+    )
   end
 
   local function apply_mutations(sprint_id)
@@ -446,39 +483,56 @@ function M.execute_mutations(buf, mutations)
       return args
     end
 
-    local function after_create_success(item, stdout, stderr)
+    local function after_create_success(m, stdout, stderr, finish)
+      local item = m.item
       local key = util.extract_issue_key((stdout or "") .. "\n" .. (stderr or ""))
-      if key and item.row ~= nil then
+      if not key then
+        -- The issue exists but the row can't be tied to it; re-saving would
+        -- create it a second time.
+        vim.notify(
+          "Issue \"" .. (item.summary or "") .. "\" was created but its key could not be read. "
+            .. "Refresh (or delete that row) before saving again.",
+          vim.log.levels.ERROR
+        )
+        finish(false)
+        return
+      end
+      m.created_key = key
+      if item.row ~= nil then
         view.set_line_key(buf, item.row, key)
         view.clear_copy_source_at_line(buf, item.row)
       end
 
       local status = item.status or ""
-      if status ~= "" and status ~= "To Do" and status ~= config.options.defaults.status and key then
+      if status ~= "" and status ~= "To Do" and status ~= config.options.defaults.status then
         cli.exec({ "issue", "move", key, status }, function(_, stderr, code)
           if code ~= 0 then
             vim.notify("Failed to set status for " .. key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-            has_errors = true
+            -- The issue itself exists: keep it in the baseline at its
+            -- initial status so a re-save retries only the move.
+            m.status_failed = true
+            fold_into_baseline(m)
+            finish(false)
+            return
           end
-          check_done()
+          finish(true)
         end)
       else
-        check_done()
+        finish(true)
       end
     end
 
-    for _, m in ipairs(mutations) do
+    local function run_one(m, finish)
       if m.type == "CREATE" then
         local function create_with_source(source_issue)
           local args = build_create_args(m.item, source_issue)
           cli.exec(args, function(stdout, stderr, code)
             if code ~= 0 then
               vim.notify("Failed to create issue: " .. (stderr or ""), vim.log.levels.ERROR)
-              has_errors = true
-              check_done()
+              finish(false)
               return
             end
-            after_create_success(m.item, stdout, stderr)
+            after_create_success(m, stdout, stderr, finish)
           end)
         end
 
@@ -509,21 +563,23 @@ function M.execute_mutations(buf, mutations)
         -- Build sequential chain: summary/description -> assignee -> labels -> status
         -- Short-circuit on error to avoid inconsistent state
         local function do_status(skip_on_error)
-          if skip_on_error or not status_changed then
-            if not skip_on_error then
-              scratch.clear_draft(m.key)
-            end
-            check_done()
+          if skip_on_error then
+            finish(false)
+            return
+          end
+          if not status_changed then
+            scratch.clear_draft(m.key)
+            finish(true)
             return
           end
           cli.exec({ "issue", "move", m.key, m.item.status }, function(_, stderr, code)
             if code ~= 0 then
               vim.notify("Failed to update status " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-              has_errors = true
-            else
-              scratch.clear_draft(m.key)
+              finish(false)
+              return
             end
-            check_done()
+            scratch.clear_draft(m.key)
+            finish(true)
           end)
         end
 
@@ -560,7 +616,6 @@ function M.execute_mutations(buf, mutations)
           cli.exec(args, function(_, stderr, code)
             if code ~= 0 then
               vim.notify("Failed to update labels " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-              has_errors = true
               do_status(true)
             else
               do_status(false)
@@ -584,7 +639,6 @@ function M.execute_mutations(buf, mutations)
             cli.exec(cmd, function(_, stderr, code)
               if code ~= 0 then
                 vim.notify("Failed to update assignee " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-                has_errors = true
                 do_labels(true)
               else
                 do_labels(false)
@@ -627,7 +681,6 @@ function M.execute_mutations(buf, mutations)
           cli.exec(args, function(_, stderr, code)
             if code ~= 0 then
               vim.notify("Failed to update issue " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-              has_errors = true
               do_assign(true)
             else
               do_assign(false)
@@ -642,21 +695,38 @@ function M.execute_mutations(buf, mutations)
             cli.exec({ "sprint", "add", sprint_id, m.key }, function(stdout, stderr, code)
               if code ~= 0 then
                 vim.notify("Failed to move to sprint " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-                has_errors = true
               end
-              check_done()
+              finish(code == 0)
             end)
           else
             vim.notify("Active sprint not found. Cannot move " .. m.key .. " to sprint.", vim.log.levels.WARN)
-            has_errors = true
-            check_done()
+            finish(false)
           end
         elseif m.dest == "BACKLOG" then
           vim.notify("Moving to Backlog (removing from Sprint) via jira-cli is not supported yet.", vim.log.levels.WARN)
-          check_done()
+          finish(true)
         end
       end
     end
+
+    local applied = 0
+    local function step(i)
+      local m = mutations[i]
+      if not m then
+        finish_all(applied, nil)
+        return
+      end
+      run_one(m, function(ok)
+        if not ok then
+          finish_all(applied, i)
+          return
+        end
+        applied = applied + 1
+        fold_into_baseline(m)
+        step(i + 1)
+      end)
+    end
+    step(1)
   end
 
   local needs_sprint_id = false
