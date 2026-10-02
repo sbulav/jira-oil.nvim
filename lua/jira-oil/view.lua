@@ -298,6 +298,7 @@ local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_c
   -- Winbar
   if config.options.view.show_winbar ~= false then
     local project = config.options.defaults.project
+    local key_width = config.options.view.key_width or 12
     local data = M.cache[buf] or {}
     local total = sprint_count + backlog_count
     local target_label = data.view_label or target
