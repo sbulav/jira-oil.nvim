@@ -1,3 +1,13 @@
+local function env_default(...)
+  for _, name in ipairs({ ... }) do
+    local value = vim.env[name]
+    if value and value ~= "" then
+      return value
+    end
+  end
+  return ""
+end
+
 ---@class jira-oil.Config
 ---@field cli table
 ---@field rest table
@@ -6,7 +16,7 @@ local default_config = {
   rest = {
     cmd = "curl",
     timeout = 10000,
-    -- Empty values use JIRA_SERVER / JIRA_LOGIN / JIRA_AUTH_TYPE at request time.
+    -- Empty values use JIRA_SERVER / JIRA_LOGIN (or JIRA_USER) / JIRA_AUTH_TYPE.
     server = "",
     login = "",
     auth_type = "",
@@ -168,8 +178,8 @@ local default_config = {
   },
   -- Use ENV by default or override
   defaults = {
-    project = vim.env.JIRA_PROJECT or "",
-    assignee = vim.env.JIRA_USER or vim.env.JIRA_ASSIGNEE or "",
+    project = env_default("JIRA_PROJECT_KEY", "JIRA_PROJECT"),
+    assignee = env_default("JIRA_USER", "JIRA_ASSIGNEE"),
     issue_type = "Task",
     status = "Open",
   },
@@ -196,7 +206,11 @@ function M.setup(opts)
   opts.keymaps = nil
   opts.keymaps_issue = nil
 
-  local new_conf = vim.tbl_deep_extend("force", vim.deepcopy(default_config), opts)
+  local defaults = vim.deepcopy(default_config)
+  -- Resolve environment defaults at setup, including when config was loaded earlier.
+  defaults.defaults.project = env_default("JIRA_PROJECT_KEY", "JIRA_PROJECT")
+  defaults.defaults.assignee = env_default("JIRA_USER", "JIRA_ASSIGNEE")
+  local new_conf = vim.tbl_deep_extend("force", defaults, opts)
 
   if not new_conf.use_default_keymaps then
     new_conf.keymaps = user_keymaps or {}

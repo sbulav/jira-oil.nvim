@@ -120,6 +120,57 @@ t.test("REST: environment defaults are resolved at request time", function()
   end)
 end)
 
+for _, legacy_login in ipairs({ false, "" }) do
+  t.test("REST: JIRA_USER supplies the login when JIRA_LOGIN is " .. tostring(legacy_login), function()
+    http.with_server({ status = 204 }, function(server)
+      local options = vim.deepcopy(config.options)
+      options.rest = { server = "", login = "", auth_type = "" }
+      h.stub(config, "options", options, function()
+        h.stub(vim.env, "JIRA_SERVER", server.url, function()
+          h.stub(vim.env, "JIRA_LOGIN", legacy_login or nil, function()
+            h.stub(vim.env, "JIRA_AUTH_TYPE", "basic", function()
+              h.stub(vim.env, "JIRA_API_TOKEN", "env-token", function()
+                for _, user in ipairs({ "first-user", "second-user" }) do
+                  h.stub(vim.env, "JIRA_USER", user, function()
+                    t.is_nil(await_request(function(cb)
+                      jira.move_to_backlog("PROJ-1", cb)
+                    end))
+                    t.eq(
+                      server.requests[#server.requests].headers.authorization,
+                      "Basic " .. vim.base64.encode(user .. ":env-token")
+                    )
+                  end)
+                end
+              end)
+            end)
+          end)
+        end)
+      end)
+    end)
+  end)
+end
+
+t.test("REST: explicit login takes precedence over login environment aliases", function()
+  http.with_server({ status = 204 }, function(server)
+    h.stub(vim.env, "JIRA_USER", "user-env", function()
+      h.stub(vim.env, "JIRA_LOGIN", "login-env", function()
+        with_rest(server.url, {}, function()
+          t.is_nil(await_request(function(cb)
+            jira.move_to_backlog("PROJ-1", cb)
+          end))
+          t.eq(server.requests[1].headers.authorization, "Basic " .. vim.base64.encode("test@example.com:test-token"))
+        end)
+        with_rest(server.url, { login = "" }, function()
+          t.is_nil(await_request(function(cb)
+            jira.move_to_backlog("PROJ-1", cb)
+          end))
+          t.eq(server.requests[2].headers.authorization, "Basic " .. vim.base64.encode("login-env:test-token"))
+        end)
+      end)
+    end)
+  end)
+end)
+
 for _, status in ipairs({ 400, 401, 403, 404, 429, 500, 302 }) do
   t.test("REST: HTTP " .. status .. " fails without retries and balances sync events", function()
     http.with_server({
@@ -232,10 +283,12 @@ t.test("REST: unsupported auth and invalid URLs fail before any process starts",
     }) do
       with_rest("https://jira.example.com", overrides, function()
         h.stub(vim.env, "JIRA_LOGIN", nil, function()
-          local err = await_request(function(cb)
-            jira.move_to_backlog("PROJ-1", cb)
+          h.stub(vim.env, "JIRA_USER", nil, function()
+            local err = await_request(function(cb)
+              jira.move_to_backlog("PROJ-1", cb)
+            end)
+            t.eq(err.kind, "configuration")
           end)
-          t.eq(err.kind, "configuration")
         end)
       end)
     end

@@ -81,7 +81,10 @@ function M.request(method, path, body, callback)
   end
   local login = opts.login
   if not login or login == "" then
-    login = vim.env.JIRA_LOGIN or ""
+    login = vim.env.JIRA_LOGIN
+    if not login or login == "" then
+      login = vim.env.JIRA_USER or ""
+    end
   end
   local auth_type = opts.auth_type
   if not auth_type or auth_type == "" then
@@ -100,7 +103,7 @@ function M.request(method, path, body, callback)
     return
   end
   if auth_type == "basic" and (type(login) ~= "string" or login == "" or login:find("[:%c]")) then
-    fail(callback, "Basic REST authentication requires rest.login (or JIRA_LOGIN).")
+    fail(callback, "Basic REST authentication requires rest.login, JIRA_LOGIN, or JIRA_USER.")
     return
   end
   if

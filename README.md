@@ -49,8 +49,23 @@ sprint history is retained. Failed requests leave the move queued and keep
 your edits. `>>` continues to use Jira CLI. Section moves are unavailable in
 sprint-only and backlog-only views.
 
-Configure the REST connection in your local setup, using the same server and
-login as your Jira CLI configuration:
+You can configure the connection entirely through environment variables;
+`require("jira-oil").setup()` needs no server, user, project, or token values:
+
+| Variable | Purpose |
+| --- | --- |
+| `JIRA_SERVER` | Jira base URL, including a context path such as `/jira` |
+| `JIRA_PROJECT_KEY` | Default project for issue reads and creation; falls back to `JIRA_PROJECT` |
+| `JIRA_USER` | Basic-auth username and default assignee; `JIRA_LOGIN` overrides it for REST authentication |
+| `JIRA_API_TOKEN` | Password for Data Center Basic auth, or a token for Bearer/Cloud auth |
+| `JIRA_AUTH_TYPE` | `basic` (default) or `bearer` |
+
+Empty environment aliases are skipped. Project and assignee defaults are
+resolved at setup; REST credentials are resolved on each request. Explicit
+Lua settings take precedence, so omit existing `defaults.project`,
+`defaults.assignee`, or `rest.login` overrides to use the environment defaults.
+
+Alternatively, configure the non-secret REST connection in your local setup:
 
 ```lua
 require("jira-oil").setup({
@@ -69,8 +84,9 @@ unnecessary. Ordinary Cloud API tokens use Basic auth with the account email.
 Scoped Cloud tokens require the appropriate gateway base URL, such as
 `https://api.atlassian.com/ex/jira/<cloudId>`, and permissions for the operation.
 
-Empty `server`, `login`, and `auth_type` settings use `JIRA_SERVER`, `JIRA_LOGIN`,
-and `JIRA_AUTH_TYPE` respectively; the default auth type is Basic. Optional
+Empty `server`, `login`, and `auth_type` settings use `JIRA_SERVER`,
+`JIRA_LOGIN` (then `JIRA_USER`), and `JIRA_AUTH_TYPE` respectively;
+the default auth type is Basic. Optional
 `rest.token = function() ... end` can return a credential from your own secret
 provider. Keep credentials in your environment/provider, not repository config.
 
@@ -89,6 +105,53 @@ project/filter-based view, rather than the exact contents of a specific board.
 The broader migration is tracked in the
 [REST migration milestone](https://github.com/sbulav/jira-oil.nvim/milestone/1).
 
+### Testing the REST branch
+
+Keep your existing `jira init` configuration for list reads and other CLI
+operations. Install curl, then export the environment before launching Neovim.
+For a Data Center personal access token:
+
+```bash
+export JIRA_SERVER='https://jira.example.com'
+export JIRA_PROJECT_KEY='PROJ'
+export JIRA_USER='your-jira-username'
+export JIRA_AUTH_TYPE='bearer'
+read -r -s -p 'Jira token: ' JIRA_API_TOKEN
+printf '\n'
+export JIRA_API_TOKEN
+```
+
+For username/password authentication, set `JIRA_AUTH_TYPE=basic` and enter
+your password at the prompt. Server/project/user values above are examples;
+store your own values in your shell environment rather than plugin config.
+
+From a checkout of `codex/backlog-rest`, start an isolated Neovim session that
+loads this checkout directly:
+
+```bash
+nvim --clean --cmd "set runtimepath^=$PWD" \
+  -c 'lua require("jira-oil").setup()' \
+  -c 'edit jira-oil://all'
+```
+
+You can first check authentication without changing an issue:
+
+```vim
+:lua require("jira-oil.rest").request("GET", "/rest/api/2/myself", nil, function(err, res) print(err and err.message or ("Authenticated: HTTP " .. res.status)) end)
+```
+
+Choose a test issue in the Sprint section and press `<<`. Check that Jira is
+unchanged before saving. Run `:w` and confirm the move; then check that the
+issue appears in Backlog and Jira no longer shows any active/future sprint
+membership. Completed sprint history should remain. An authentication or
+permission failure should leave the pending move and buffer edits intact.
+
+To run automated checks without contacting Jira:
+
+```bash
+nvim --clean -l tests/run.lua
+```
+
 ## Installation
 
 Using [lazy.nvim](https://github.com/folke/lazy.nvim):
@@ -97,11 +160,7 @@ Using [lazy.nvim](https://github.com/folke/lazy.nvim):
 {
   "your-username/jira-oil.nvim",
   config = function()
-    require("jira-oil").setup({
-      defaults = {
-        project = "PROJ", -- or set JIRA_PROJECT env var
-      }
-    })
+    require("jira-oil").setup() -- Uses JIRA_PROJECT_KEY / JIRA_USER / REST env vars
   end
 }
 ```
@@ -177,7 +236,7 @@ Use this as a complete starting point. Replace placeholder values (`PROJ`, `TEAM
 
       rest = {
         server = "",    -- Or JIRA_SERVER; copy from your local jira-cli config
-        login = "",     -- Or JIRA_LOGIN (required for Basic auth)
+        login = "",     -- Or JIRA_LOGIN / JIRA_USER (required for Basic auth)
         auth_type = "", -- Or JIRA_AUTH_TYPE; defaults to "basic"
         cmd = "curl",
         timeout = 10000,
@@ -266,7 +325,7 @@ Use this as a complete starting point. Replace placeholder values (`PROJ`, `TEAM
       },
 
       defaults = {
-        project = vim.env.JIRA_PROJECT or "PROJ",
+        project = vim.env.JIRA_PROJECT_KEY or vim.env.JIRA_PROJECT or "PROJ",
         assignee = vim.env.JIRA_USER or vim.env.JIRA_ASSIGNEE or "",
         issue_type = "Task",
         status = "Open",
@@ -419,7 +478,7 @@ require("jira-oil").setup({
   },
   rest = {
     server = "",    -- Or JIRA_SERVER; include the server's context path
-    login = "",     -- Or JIRA_LOGIN
+    login = "",     -- Or JIRA_LOGIN / JIRA_USER
     auth_type = "", -- Or JIRA_AUTH_TYPE; "basic" or "bearer"
     cmd = "curl",
     timeout = 10000, -- ms
@@ -505,7 +564,7 @@ require("jira-oil").setup({
     max_height_ratio = 0.8,
   },
   defaults = {
-    project = vim.env.JIRA_PROJECT or "",
+    project = vim.env.JIRA_PROJECT_KEY or vim.env.JIRA_PROJECT or "",
     assignee = vim.env.JIRA_USER or vim.env.JIRA_ASSIGNEE or "",
     issue_type = "Task",
     status = "Open",
