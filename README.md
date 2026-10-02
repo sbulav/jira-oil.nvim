@@ -299,7 +299,8 @@ its edits.
 
 Use `gR` to reset the current list's edits and drafts and restore original values.
 Drafts for issues outside that list are kept. Refreshes after a successful save
-do not prompt; a delayed refresh is skipped if you have started making new edits.
+do not prompt; a delayed refresh is skipped if you have started editing list text
+again. Stored drafts survive those refreshes.
 
 ## Keymaps
 

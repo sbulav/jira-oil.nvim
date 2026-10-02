@@ -90,6 +90,9 @@ local operations = {
   reload = function(buf)
     view.open(buf, "jira-oil://all")
   end,
+  same_uri = function()
+    jira.open("all")
+  end,
   close = function(buf)
     actions.close.callback({ buf = buf })
   end,
@@ -198,12 +201,57 @@ end)
 t.test("unsaved: accepting a filter changes the view once", function()
   with_list(function(buf, calls, confirmations, answer)
     edit(buf)
+    local before = snapshot(buf)
     answer(2)
     actions.filter_by_status.callback({ buf = buf })
     t.eq(#confirmations, 1)
     t.ok(vim.api.nvim_get_current_buf() ~= buf)
     t.eq(view.get_spec(vim.api.nvim_get_current_buf()).filters.status, "Open")
     t.eq(#calls, 4)
+    t.ok(vim.api.nvim_buf_is_valid(buf))
+    t.eq(vim.bo[buf].bufhidden, "hide")
+    t.eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), before.lines)
+    t.eq(vim.bo[buf].modified, true)
+  end)
+end)
+
+for _, diff in ipairs({ { summary_changed = true }, { queued_for_removal = true } }) do
+  t.test("unsaved: automatic refresh preserves stored drafts without prompting: " .. next(diff), function()
+    with_list(function(buf, calls, confirmations)
+      scratch.drafts["PROJ-1"] = { diff = diff }
+      local drafts = vim.deepcopy(scratch.drafts)
+      view.refresh(buf, { after_save = true })
+      t.eq(#calls, 4)
+      t.eq(#confirmations, 0)
+      t.eq(scratch.drafts, drafts)
+      t.eq(vim.bo[buf].modified, false)
+    end)
+  end)
+end
+
+t.test("unsaved: repeated opens during an initial load are clean and ignore stale responses", function()
+  with_list(function(buf, _, confirmations)
+    view.cache[buf] = nil
+    local undolevels = vim.bo[buf].undolevels
+    local pending = {}
+    h.stub(cli, "get_filtered_issues", function(_, _, cb)
+      pending[#pending + 1] = cb
+    end, function()
+      view.open(buf, "jira-oil://all")
+      t.eq(vim.bo[buf].modified, false, "the loading message is not a user edit")
+      local sequence = view.open_seq[buf]
+      jira.open("all")
+      t.eq(view.open_seq[buf], sequence + 1)
+      t.eq(#confirmations, 0)
+      t.eq(#pending, 2)
+      pending[1]({})
+      t.eq(#pending, 2, "the stale sprint response must not request backlog")
+      pending[2]({})
+      pending[3]({})
+      t.eq(vim.bo[buf].modified, false)
+      t.eq(vim.bo[buf].undolevels, undolevels, "restarting a load must restore the original undo setting")
+      t.eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), { view.header_sprint, view.header_backlog })
+    end)
   end)
 end)
 
@@ -279,6 +327,8 @@ for _, new_edits in ipairs({ false, true }) do
       t.ok(deferred ~= nil)
       if new_edits then
         edit(buf)
+      else
+        scratch.drafts["PROJ-1"] = { diff = { queued_for_removal = true } }
       end
       local before = snapshot(buf)
       deferred()
@@ -289,6 +339,7 @@ for _, new_edits in ipairs({ false, true }) do
       else
         t.eq(#calls, 6)
         t.eq(vim.bo[buf].modified, false)
+        t.eq(scratch.drafts, before.drafts)
       end
     end)
   end)
@@ -297,9 +348,31 @@ end
 t.test("unsaved: a deletion-only save restores rows without a discard prompt", function()
   with_list(function(buf, _, confirmations)
     vim.api.nvim_buf_set_lines(buf, 1, 2, false, {})
-    mutator.save(buf)
+    h.stub(cli, "exec", function()
+      error("a deletion-only save must not execute Jira commands")
+    end, function()
+      mutator.save(buf)
+    end)
     t.eq(#confirmations, 0)
     t.eq(vim.bo[buf].modified, false)
     t.eq(view.get_key_at_line(buf, 1), "PROJ-1")
+  end)
+end)
+
+t.test("unsaved: closing an issue buffer still captures its draft without prompting", function()
+  with_list(function(_, _, confirmations)
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_set_current_buf(buf)
+    vim.b[buf].jira_oil_kind = "issue"
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Pending issue edit" })
+    local captured
+    h.stub(scratch, "capture_draft", function(candidate)
+      captured = candidate
+    end, function()
+      actions.close.callback({ buf = buf })
+    end)
+    t.eq(captured, buf)
+    t.eq(#confirmations, 0)
+    t.eq(vim.api.nvim_buf_is_valid(buf), false)
   end)
 end)

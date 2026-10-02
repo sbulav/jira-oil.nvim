@@ -139,7 +139,10 @@ function M.open(uri)
     -- Editing the same URI reloads the current buffer. Route this through the
     -- refresh guard once, rather than Neovim's generic E37 check.
     if vim.api.nvim_buf_get_name(buf) == uri then
-      return view.refresh(buf)
+      if view.cache[buf] then
+        return view.refresh(buf)
+      end
+      return view.open(buf, uri)
     end
     if not view.confirm_discard(buf, "Leave this list and change the Jira view") then
       return false

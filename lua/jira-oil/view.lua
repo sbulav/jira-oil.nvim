@@ -869,10 +869,12 @@ local function load_list(buf, uri)
   vim.b[buf].jira_oil_kind = "list"
 
   -- Disable undo while loading
-  local old_undolevels = vim.bo[buf].undolevels
+  local old_undolevels = vim.b[buf].jira_oil_loading_undolevels or vim.bo[buf].undolevels
+  vim.b[buf].jira_oil_loading_undolevels = old_undolevels
   vim.bo[buf].undolevels = -1
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Loading " .. spec.view_label .. "..." })
+  vim.bo[buf].modified = false
 
   --- Build buffer lines and parallel metadata from a list of issues.
   ---@param issues table[]
@@ -913,6 +915,7 @@ local function load_list(buf, uri)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.bo[buf].modified = false
     vim.bo[buf].undolevels = old_undolevels
+    vim.b[buf].jira_oil_loading_undolevels = nil
 
     apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, target, nil)
     actions.setup(buf)
@@ -988,10 +991,13 @@ function M.refresh(buf, opts)
   end
   -- The delayed refresh after creating an issue must not discard newer edits
   -- or interrupt the user with a prompt while they are editing again.
-  if opts and opts.after_save and M.has_pending_changes(buf) then
-    return false
-  end
-  if not M.confirm_discard(buf, "Refresh the list and discard its text edits") then
+  if opts and opts.after_save then
+    if vim.bo[buf].modified then
+      return false
+    end
+    -- Drafts are stored independently of list text and survive the reload.
+    -- They must not suppress the refresh or prompt after a successful save.
+  elseif not M.confirm_discard(buf, "Refresh the list and discard its text edits") then
     return false
   end
   cli.clear_cache("all")
