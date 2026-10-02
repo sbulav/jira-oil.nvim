@@ -255,7 +255,7 @@ PROJ-102 │ To Do       │ john │ Update README       │ docs
 - **Edit an issue**: Change text directly. "To Do" → "In Progress" queues a status transition
 - **Create inline**: Type a new line with a summary. Empty key column means new task
 - **Copy task**: Yank a line (`yy`), paste (`p` or `P`). The new task copies fields from the source
-- **Move between sprint/backlog**: Press `dd` on an issue in the combined view. It is moved to the opposite section immediately and marked `[draft]` until saved
+- **Move into sprint**: Use `>>` in the combined view, then save to move the issue into the active sprint. Backlog moves (`<<`) are unsupported by jira-cli; saving one reports failure and preserves pending edits. Section moves are unavailable in sprint-only and backlog-only views
 - **Open in browser**: `gB` opens the issue in your browser
 - **Pivot the current view**: `ga` filters by assignee, `gS` by status, `gp` by project, `g/` prompts for summary text
 - **Navigate up / clear filters**: `-` opens the parent view, `gu` clears the active filters
