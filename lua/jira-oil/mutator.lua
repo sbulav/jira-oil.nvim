@@ -703,8 +703,8 @@ function M.execute_mutations(buf, mutations)
             finish(false)
           end
         elseif m.dest == "BACKLOG" then
-          vim.notify("Moving to Backlog (removing from Sprint) via jira-cli is not supported yet.", vim.log.levels.WARN)
-          finish(true)
+          vim.notify("Moving to backlog is not supported by jira-cli. The move was not applied.", vim.log.levels.WARN)
+          finish(false)
         end
       end
     end
