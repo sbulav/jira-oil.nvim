@@ -184,7 +184,6 @@ M.reset = {
     if vim.b[buf].jira_oil_kind == "issue" then
       require("jira-oil.scratch").reset(buf)
     else
-      require("jira-oil.scratch").clear_all_drafts()
       require("jira-oil.view").reset(buf)
     end
   end,
@@ -210,6 +209,9 @@ M.close = {
   desc = "Close Jira buffer",
   callback = function(opts)
     local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
+    if not require("jira-oil.view").confirm_discard(buf, "Close the list and discard its text edits") then
+      return
+    end
     if vim.b[buf].jira_oil_kind == "issue" then
       require("jira-oil.scratch").capture_draft(buf)
     end

@@ -290,7 +290,17 @@ When you edit a scratch buffer, changes are saved as drafts before you save to J
 - `[draft]` in the scratch buffer winbar
 - `[draft]` at the end of list buffer lines
 
-Use `gR` to reset drafts and restore original values.
+Refreshing (`<M-r>`), closing (`<C-q>`), resetting (`gR`), and changing list filters
+ask before proceeding when the list has unsaved edits, issue drafts, or queued
+removals. **Cancel** is the default and keeps all pending changes. Refreshing or
+closing discards list text edits; issue drafts and queued removals remain stored.
+Opening a different filter view keeps the previous list buffer hidden, including
+its edits.
+
+Use `gR` to reset the current list's edits and drafts and restore original values.
+Drafts for issues outside that list are kept. Refreshes after a successful save
+do not prompt; a delayed refresh is skipped if you have started editing list text
+again. Stored drafts survive those refreshes.
 
 ## Keymaps
 
