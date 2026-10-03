@@ -30,7 +30,7 @@ local function join_cmd(args)
   return table.concat(args, "\31")
 end
 
-local function exec_cached(cache_key, args, ttl_ms, callback)
+local function exec_cached(cache_key, args, ttl_ms, callback, execute)
   local epoch = cache_epoch
 
   if cache_enabled() and ttl_ms and ttl_ms > 0 then
@@ -55,7 +55,8 @@ local function exec_cached(cache_key, args, ttl_ms, callback)
   local entry = { epoch = epoch, callbacks = { callback } }
   inflight[cache_key] = entry
 
-  M.exec(args, function(stdout, stderr, code)
+  local run = execute or M.exec
+  run(args, function(stdout, stderr, code)
     -- Never strand callbacks: this entry always fires its own waiters, even if
     -- clear_cache() ran while the request was in flight. Only detach from the
     -- shared table if we are still the active entry (a newer request for the
@@ -239,6 +240,36 @@ local function build_view_jql(scope, filters)
   return build_jql(base)
 end
 
+-- Keep pagination inside the cached request so deduplication and invalidation
+-- cover the entire list, rather than a mixture of separately cached pages.
+local function exec_issue_pages(args, callback)
+  local offset, chunks = 0, {}
+  local function next_page()
+    local page_args = vim.deepcopy(args)
+    vim.list_extend(page_args, { "--paginate", tostring(offset) .. ":100" })
+    M.exec(page_args, function(stdout, stderr, code)
+      if code ~= 0 then
+        callback(nil, stderr, code)
+        return
+      end
+      local lines = vim.split(stdout or "", "\n", { trimempty = true })
+      if offset > 0 then
+        table.remove(lines, 1) -- subsequent pages repeat the CSV header
+      end
+      if #lines > 0 then
+        table.insert(chunks, table.concat(lines, "\n"))
+      end
+      if #parse_issue_csv(stdout) < 100 then
+        callback(table.concat(chunks, "\n"), nil, 0)
+      else
+        offset = offset + 100
+        next_page()
+      end
+    end)
+  end
+  next_page()
+end
+
 ---@param scope string
 ---@param filters table|nil
 ---@param callback function(issues)
@@ -262,7 +293,7 @@ local function get_issues(scope, filters, callback)
       return
     end
     callback(parse_issue_csv(stdout))
-  end)
+  end, exec_issue_pages)
 end
 
 local active_requests = 0
