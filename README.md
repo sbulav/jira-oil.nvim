@@ -468,6 +468,7 @@ require("jira-oil").setup({
   statuses = { "Open", "To Do", "In Progress", "In Review", "Done", "Closed", "Blocked" },
   -- Optional: set if your Jira instance stores epic link in a custom field
   epic_field = "",
+  custom_fields = {}, -- Explicit, ordered field definitions (see Custom Fields)
   create = {
     available_components = {}, -- List for component picker
   },
@@ -496,6 +497,56 @@ as a transition after creation. The plugin assumes Jira creates issues in
 are not discovered from Jira. An empty `statuses` list disables cycling and
 status completion.
 
+### Custom Fields
+
+Select custom fields explicitly in your local config. They appear in the issue
+editor in the configured order, after Assignee. The plugin supports creation,
+editing, draft restoration, and applying those drafts from a list save.
+
+```lua
+require("jira-oil").setup({
+  custom_fields = {
+    { id = "customfield_10001", cli_name = "note", type = "text", label = "Note" },
+    { id = "customfield_10002", cli_name = "story-points", type = "number", label = "Points" },
+    { id = "customfield_10003", cli_name = "target-date", type = "date" },
+    { id = "customfield_10004", cli_name = "category", type = "single_select", options = { "A", "B" } },
+    { id = "customfield_10005", cli_name = "platforms", type = "multi_select", options = { "Web", "Mobile" } },
+  },
+})
+```
+
+These IDs and names are illustrative placeholders; replace them locally.
+`id` identifies the value in Jira's issue response. `cli_name` must match the
+alias understood by jira-cli (its field name lowercased, with spaces replaced
+by hyphens). The same field must already be registered with the matching type
+under `issue.fields.custom` in jira-cli's config. The plugin does not read that
+YAML file or discover fields automatically. See [jira-cli's custom-field guide](https://github.com/ankitpokhrel/jira-cli/discussions/346).
+
+Edit text directly; it may span multiple lines before the next field label.
+Numbers accept finite decimal values, including zero and negatives. Dates use
+`YYYY-MM-DD`. Single-select fields contain one option name; multi-select fields
+contain comma-separated names. Multi-select edits become additions/removals,
+so replacing a selection also removes deselected options. Its option names
+cannot contain commas or start with `-`, due to jira-cli's transport format.
+
+`label` is optional and defaults to `cli_name`. `options` optionally validates
+selection names locally; allowed choices are otherwise validated by Jira.
+`required = true` rejects blank values on every save, including creation;
+leave it unset for requirements that depend on a particular transition.
+Unchanged fields and unselected fields are never sent on update. Unsupported
+Jira value shapes (such as rich-text ADF objects in a text field) are shown as
+read-only placeholders and preserved.
+
+Text values can be cleared, and all multi-select options can be removed.
+Clearing numbers, dates, and single-select fields to null is unsupported by
+jira-cli; the plugin rejects those clears instead of sending an invalid value.
+Fields must be editable through `jira issue edit`; fields available only on a
+transition screen cannot be supplied through jira-cli's status-move command.
+
+Validation runs before any writes. Field edits are saved before status changes;
+a failure stops subsequent operations and retains your draft. If fields save
+but the transition fails, retrying saves only the remaining changes.
+
 ### Instance-Specific Configuration
 
 These values usually depend on your Jira tenant. Keep them in your local Neovim config, not in this repository:
@@ -505,6 +556,7 @@ These values usually depend on your Jira tenant. Keep them in your local Neovim 
 - `cli.epics.args` / `cli.epic_issues.args` if your team uses custom filters
 - `create.available_components`
 - `epic_field` if your Jira uses a custom field for Epic link
+- `custom_fields` IDs, aliases, labels, and selection choices
 
 ### Disabling Keymaps
 

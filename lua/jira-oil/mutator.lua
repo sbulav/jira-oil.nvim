@@ -2,6 +2,7 @@ local parser = require("jira-oil.parser")
 local cli = require("jira-oil.cli")
 local config = require("jira-oil.config")
 local util = require("jira-oil.util")
+local custom = require("jira-oil.custom_fields")
 
 local M = {}
 
@@ -163,6 +164,9 @@ function M.compute_diff(buf)
         if eff_summary ~= orig.summary then table.insert(updates, "summary: " .. orig.summary .. " -> " .. eff_summary) end
         if eff_labels ~= (orig.labels or "") then table.insert(updates, "labels: " .. (orig.labels or "") .. " -> " .. eff_labels) end
         if description_changed then table.insert(updates, "description: [changed]") end
+        local custom_updates = draft and draft.diff and draft.diff.custom_field_updates or {}
+        local custom_errors = draft and draft.diff and draft.diff.custom_field_errors or {}
+        if #custom_updates > 0 or #custom_errors > 0 then table.insert(updates, "custom fields: [changed]") end
         if #updates > 0 then
           local effective_item = vim.deepcopy(item)
           effective_item.status = eff_status
@@ -170,6 +174,8 @@ function M.compute_diff(buf)
           effective_item.summary = eff_summary
           effective_item.labels = eff_labels
           effective_item.description = eff_description
+          effective_item.custom_field_updates = vim.deepcopy(custom_updates)
+          effective_item.custom_field_errors = vim.deepcopy(custom_errors)
           table.insert(mutations, { type = "UPDATE", key = item.key, updates = updates, item = effective_item })
         end
       end
@@ -208,6 +214,9 @@ function M.compute_diff(buf)
           if eff_summary ~= orig.summary then table.insert(updates, "summary: " .. orig.summary .. " -> " .. eff_summary) end
           if eff_labels ~= (orig.labels or "") then table.insert(updates, "labels: " .. (orig.labels or "") .. " -> " .. eff_labels) end
           if draft.diff and draft.diff.description_changed then table.insert(updates, "description: [changed]") end
+          local custom_updates = draft.diff and draft.diff.custom_field_updates or {}
+          local custom_errors = draft.diff and draft.diff.custom_field_errors or {}
+          if #custom_updates > 0 or #custom_errors > 0 then table.insert(updates, "custom fields: [changed]") end
 
           if #updates > 0 then
             local item = {
@@ -217,6 +226,8 @@ function M.compute_diff(buf)
               summary = eff_summary,
               labels = eff_labels,
               description = eff_description,
+              custom_field_updates = vim.deepcopy(custom_updates),
+              custom_field_errors = vim.deepcopy(custom_errors),
             }
             table.insert(mutations, { type = "UPDATE", key = key, updates = updates, item = item })
           end
@@ -253,10 +264,22 @@ function M.compute_diff(buf)
   return mutations, removed_keys
 end
 
+local function validate_custom_mutations(mutations)
+  for _, mutation in ipairs(mutations) do
+    local errors = mutation.item and mutation.item.custom_field_errors or {}
+    if #errors > 0 then
+      vim.notify(table.concat(errors, "\n"), vim.log.levels.ERROR)
+      return false
+    end
+  end
+  return true
+end
+
 ---Save view and execute mutations
 ---@param buf number
 function M.save(buf)
   local mutations, removed_keys = M.compute_diff(buf)
+  if not validate_custom_mutations(mutations) then return end
   if #mutations == 0 then
     -- Deleted lines produce no mutation (they're intentionally ignored). When a
     -- deletion is the only edit, restore the buffer from cache so the removed
@@ -341,6 +364,7 @@ end
 ---@param buf number
 ---@param mutations table[]
 function M.execute_mutations(buf, mutations)
+  if not validate_custom_mutations(mutations) then return end
   local view = require("jira-oil.view")
   local scratch = require("jira-oil.scratch")
   local data = view.cache[buf]
@@ -484,6 +508,9 @@ function M.execute_mutations(buf, mutations)
         table.insert(args, fields.description)
       end
 
+      local updates, errors = custom.for_create(config.options.custom_fields, fields)
+      if #errors > 0 then return nil, table.concat(errors, "\n") .. "\nOpen the issue editor to fill the required custom fields." end
+      custom.append_args(args, updates, true)
       return args
     end
 
@@ -529,7 +556,12 @@ function M.execute_mutations(buf, mutations)
     local function run_one(m, finish)
       if m.type == "CREATE" then
         local function create_with_source(source_issue)
-          local args = build_create_args(m.item, source_issue)
+          local args, err = build_create_args(m.item, source_issue)
+          if not args then
+            vim.notify(err, vim.log.levels.ERROR)
+            finish(false)
+            return
+          end
           cli.exec(args, function(stdout, stderr, code)
             if code ~= 0 then
               vim.notify("Failed to create issue: " .. (stderr or ""), vim.log.levels.ERROR)
@@ -556,6 +588,7 @@ function M.execute_mutations(buf, mutations)
         local assignee_changed = false
         local status_changed = false
         local labels_changed = false
+        local custom_updates = m.item.custom_field_updates or {}
         for _, update in ipairs(m.updates) do
           if update:match("^summary:") then summary_changed = true end
           if update:match("^description:") then description_changed = true end
@@ -572,7 +605,7 @@ function M.execute_mutations(buf, mutations)
             return
           end
           if not status_changed then
-            scratch.clear_draft(m.key)
+            scratch.complete_list_update(m.key, m.item, m.updates)
             finish(true)
             return
           end
@@ -582,7 +615,7 @@ function M.execute_mutations(buf, mutations)
               finish(false)
               return
             end
-            scratch.clear_draft(m.key)
+            scratch.complete_list_update(m.key, m.item, m.updates)
             finish(true)
           end)
         end
@@ -672,7 +705,7 @@ function M.execute_mutations(buf, mutations)
           end)
         end
 
-        if summary_changed or description_changed then
+        if summary_changed or description_changed or #custom_updates > 0 then
           local args = { "issue", "edit", m.key, "--no-input" }
           if summary_changed then
             table.insert(args, "-s")
@@ -682,11 +715,13 @@ function M.execute_mutations(buf, mutations)
             table.insert(args, "--body")
             table.insert(args, m.item.description or "")
           end
+          custom.append_args(args, custom_updates, false)
           cli.exec(args, function(_, stderr, code)
             if code ~= 0 then
               vim.notify("Failed to update issue " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
               do_assign(true)
             else
+              scratch.commit_custom_fields(m.key, custom_updates)
               do_assign(false)
             end
           end)
