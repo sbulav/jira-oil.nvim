@@ -2,6 +2,7 @@ local config = require("jira-oil.config")
 local cli = require("jira-oil.cli")
 local util = require("jira-oil.util")
 local actions = require("jira-oil.actions")
+local custom = require("jira-oil.custom_fields")
 
 local M = {}
 
@@ -247,12 +248,12 @@ local function apply_issue_decorations(buf)
 
   local label_width = data.layout.label_width or 12
 
-  local function add_label(field, hl)
+  local function add_label(field, hl, label_text)
     local row = get_field_row(buf, field)
     if not row then
       return
     end
-    local label = util.pad_right(field .. ":", label_width) .. " "
+    local label = util.pad_right((label_text or field) .. ":", label_width) .. " "
     
     -- In Nvim 0.10+ we can use invalidate = false or similar to keep the label
     vim.api.nvim_buf_set_extmark(buf, M.ns, row - 1, 0, {
@@ -270,6 +271,9 @@ local function apply_issue_decorations(buf)
   add_label("Labels")
   add_label("Status")
   add_label("Assignee")
+  for _, field in ipairs(data.custom_field_defs or {}) do
+    add_label("custom:" .. field.id, nil, custom.label(field))
+  end
   add_label("Summary")
   add_label("Description")
 
@@ -332,7 +336,7 @@ local function description_lines(desc)
 end
 
 ---@param original table|nil diff baseline; defaults to `issue`
-local function render_issue(buf, key, issue, is_new, original)
+local function render_issue(buf, key, issue, is_new, original, custom_text, custom_defs)
   if not vim.api.nvim_buf_is_valid(buf) then return end
   original = original or issue
 
@@ -375,21 +379,22 @@ local function render_issue(buf, key, issue, is_new, original)
 
   local desc_lines = description_lines(issue.fields and issue.fields.description)
 
-  local lines = {
-    project,
-    epic,
-    (itype and itype.name or config.options.defaults.issue_type),
-    components,
-    labels,
-    status,
-    assignee,
-    "",
-    summary,
-    "",
-  }
-  for _, l in ipairs(desc_lines) do
-    table.insert(lines, l)
+  local definitions = vim.deepcopy(custom_defs or config.options.custom_fields)
+  local lines = { project, epic, (itype and itype.name or config.options.defaults.issue_type), components, labels, status, assignee }
+  local field_rows, original_custom_fields, read_errors = {}, {}, {}
+  local label_width = 12
+  for _, field in ipairs(definitions) do
+    local text = custom.display(field, issue.fields and issue.fields[field.id])
+    local baseline, err = custom.display(field, original.fields and original.fields[field.id])
+    original_custom_fields[field.id], read_errors[field.id] = baseline, err
+    if custom_text and custom_text[field.id] ~= nil then text = custom_text[field.id] end
+    field_rows["custom:" .. field.id] = #lines
+    label_width = math.max(label_width, vim.api.nvim_strwidth(custom.label(field)) + 1)
+    vim.list_extend(lines, vim.split(text, "\n", { plain = true }))
   end
+  local divider_row = #lines
+  vim.list_extend(lines, { "", summary, "" })
+  vim.list_extend(lines, desc_lines)
 
   util.without_undo(buf, function()
     vim.bo[buf].modifiable = true
@@ -407,8 +412,11 @@ local function render_issue(buf, key, issue, is_new, original)
       table.concat(description_lines(original.fields and original.fields.description), "\n")
     ),
     epic_key = epic_key,
+    custom_field_defs = definitions,
+    original_custom_fields = original_custom_fields,
+    custom_field_read_errors = read_errors,
     layout = {
-      label_width = 12,
+      label_width = label_width,
       anchors = {},
     },
   }
@@ -430,10 +438,13 @@ local function render_issue(buf, key, issue, is_new, original)
   anchors.labels = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 4, 0, extmark_opts)
   anchors.status = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 5, 0, extmark_opts)
   anchors.assignee = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 6, 0, extmark_opts)
-  anchors.divider1 = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 7, 0, extmark_opts)
-  anchors.summary = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 8, 0, extmark_opts)
-  anchors.divider2 = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 9, 0, extmark_opts)
-  anchors.description = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, 10, 0, extmark_opts)
+  for name, row in pairs(field_rows) do
+    anchors[name] = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, row, 0, extmark_opts)
+  end
+  anchors.divider1 = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, divider_row, 0, extmark_opts)
+  anchors.summary = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, divider_row + 1, 0, extmark_opts)
+  anchors.divider2 = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, divider_row + 2, 0, extmark_opts)
+  anchors.description = vim.api.nvim_buf_set_extmark(buf, M.ns_anchor, divider_row + 3, 0, extmark_opts)
 
   apply_issue_decorations(buf)
   apply_issue_winbar(buf)
@@ -591,7 +602,9 @@ function M.open(buf, uri)
         local issue = vim.deepcopy(fetched)
         apply_row_overrides(issue, pending and pending.row_fields or nil)
         apply_parsed_overrides(issue, draft and draft.parsed or nil)
-        render_issue(buf, key, issue, false, vim.deepcopy(fetched))
+        render_issue(buf, key, issue, false, vim.deepcopy(fetched),
+          draft and draft.parsed and draft.parsed.custom_fields,
+          draft and draft.parsed and draft.parsed.custom_field_defs)
       else
         vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Error loading issue " .. key })
       end
@@ -646,6 +659,16 @@ function M.parse_buffer(input)
     parsed.fields.status = get_value("Status")
     parsed.fields.assignee = get_value("Assignee")
     parsed.summary = get_value("Summary")
+    parsed.custom_fields = {}
+    parsed.custom_field_defs = vim.deepcopy(data.custom_field_defs or {})
+    for i, field in ipairs(parsed.custom_field_defs) do
+      local row = get_field_row(buf, "custom:" .. field.id)
+      local next_field = parsed.custom_field_defs[i + 1]
+      local last = get_field_row(buf, next_field and ("custom:" .. next_field.id) or "divider1")
+      if row and last and last > row then
+        parsed.custom_fields[field.id] = table.concat(vim.api.nvim_buf_get_lines(buf, row - 1, last - 1, false), "\n")
+      end
+    end
 
     local desc_row = get_field_row(buf, "Description")
     if desc_row then
@@ -771,6 +794,9 @@ local function compute_issue_diff(data, parsed)
   changes.labels_changed = new_labels_str ~= orig_labels_str
   changes.new_labels = new_labels_str
 
+  changes.custom_field_updates, changes.custom_field_errors = custom.diff(
+    data.custom_field_defs, parsed.custom_fields, data.original_custom_fields, data.custom_field_read_errors, data.is_new
+  )
   return changes
 end
 
@@ -785,6 +811,8 @@ local function has_any_changes(diff)
     or diff.components_changed
     or diff.type_changed
     or diff.labels_changed
+    or #(diff.custom_field_updates or {}) > 0
+    or #(diff.custom_field_errors or {}) > 0
 end
 
 ---@param key string
@@ -872,21 +900,76 @@ function M.capture_draft(buf)
   refresh_list_draft_markers(data.key)
 end
 
+---Record custom fields that reached Jira, retaining any newer edits for retry.
+function M.commit_custom_fields(key, updates)
+  local draft = M.drafts[key]
+  if draft and draft.diff then
+    local pending = {}
+    for _, update in ipairs(draft.diff.custom_field_updates or {}) do
+      local applied = false
+      for _, saved in ipairs(updates) do
+        if saved.field.id == update.field.id then
+          if saved.value == update.value then applied = true else update.previous = saved.value end
+          break
+        end
+      end
+      if not applied then table.insert(pending, update) end
+    end
+    draft.diff.custom_field_updates = pending
+  end
+  for buf, data in pairs(M.cache) do
+    if data.key == key and not data.is_new then
+      data.original.fields = data.original.fields or {}
+      custom.apply(data.original.fields, updates)
+      data.original_custom_fields = data.original_custom_fields or {}
+      for _, update in ipairs(updates) do data.original_custom_fields[update.field.id] = update.value end
+      if vim.api.nvim_buf_is_valid(buf) then M.capture_draft(buf) end
+    end
+  end
+end
+
+---Finish a list update without discarding newer custom-field edits.
+function M.complete_list_update(key, item, updates)
+  local tracked = false
+  for buf, data in pairs(M.cache) do
+    if data.key == key and #(data.custom_field_defs or {}) > 0 and vim.api.nvim_buf_is_valid(buf) then
+      tracked = true
+      local fields = data.original.fields
+      fields.summary = item.summary
+      fields.status = { name = item.status }
+      fields.assignee = item.assignee ~= "Unassigned" and { displayName = item.assignee } or nil
+      fields.labels = util.labels_to_list(item.labels)
+      for _, update in ipairs(updates) do
+        if update:match("^description:") then
+          fields.description = item.description
+          data.original_description = normalize_description(item.description)
+        end
+      end
+      M.capture_draft(buf)
+    end
+  end
+  if not tracked then
+    local draft = M.drafts[key]
+    if not draft or (#(draft.diff.custom_field_updates or {}) == 0 and #(draft.diff.custom_field_errors or {}) == 0) then
+      M.clear_draft(key)
+    end
+  end
+end
+
 ---Execute a sequence of async steps, calling done_cb when all complete
 ---@param steps table[] Array of { fn = function(next_cb), desc = string }
 ---@param done_cb function(has_errors: boolean)
 local function exec_steps(steps, done_cb)
-  local has_errors = false
   local idx = 0
 
   local function run_next()
     idx = idx + 1
     if idx > #steps then
-      done_cb(has_errors)
+      done_cb(false)
       return
     end
     steps[idx].fn(function(err)
-      if err then has_errors = true end
+      if err then done_cb(true); return end
       run_next()
     end)
   end
@@ -899,8 +982,20 @@ end
 function M.save(buf)
   local data = M.cache[buf]
   if not data then return end
+  if data.create_without_key then
+    vim.notify("This issue was created but its key could not be read. Find its key in Jira and reopen it before saving again.", vim.log.levels.ERROR)
+    return
+  end
 
   local parsed = M.parse_buffer(buf)
+  local saved_lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local diff = compute_issue_diff(data, parsed)
+  if not data.is_new then M.capture_draft(buf) end
+  if #diff.custom_field_errors > 0 then
+    vim.notify(table.concat(diff.custom_field_errors, "\n"), vim.log.levels.ERROR)
+    vim.bo[buf].modified = true
+    return
+  end
 
   if parsed.summary == "" then
     vim.notify("Summary cannot be empty.", vim.log.levels.ERROR)
@@ -957,71 +1052,76 @@ function M.save(buf)
       table.insert(args, parsed.description)
     end
 
+    custom.append_args(args, diff.custom_field_updates, true)
     cli.exec(args, function(stdout, stderr, code)
       if code ~= 0 then
         vim.notify("Failed to create issue: " .. (stderr or ""), vim.log.levels.ERROR)
+        if vim.api.nvim_buf_is_valid(buf) then vim.bo[buf].modified = true end
+        return
+      end
+      local created_key = util.extract_issue_key((stdout or "") .. "\n" .. (stderr or ""))
+      if not created_key then
+        data.create_without_key = true
+        cli.clear_cache("all")
+        vim.notify("Issue created but its key could not be read. Find its key in Jira and reopen it before saving again.", vim.log.levels.ERROR)
+        if vim.api.nvim_buf_is_valid(buf) then vim.bo[buf].modified = true end
+        return
+      end
+      data.key, data.is_new = created_key, false
+      data.epic_key = extract_epic_key(parsed.fields.epic or "")
+      data.original = data.original or { fields = {} }
+      data.original.fields = data.original.fields or {}
+      local fields = data.original.fields
+      custom.apply(fields, diff.custom_field_updates)
+      for _, update in ipairs(diff.custom_field_updates) do data.original_custom_fields[update.field.id] = update.value end
+      fields.summary, fields.description = parsed.summary, parsed.description
+      data.original_description = normalize_description(parsed.description)
+      if parsed.fields.assignee and parsed.fields.assignee ~= "" and parsed.fields.assignee ~= "Unassigned" then
+        fields.assignee = { displayName = parsed.fields.assignee }
       else
-        local created_key = util.extract_issue_key((stdout or "") .. "\n" .. (stderr or ""))
-        if created_key and created_key ~= "" then
-          data.key = created_key
-          data.is_new = false
-          data.epic_key = extract_epic_key(parsed.fields.epic or "")
-          if not data.original then
-            data.original = { fields = {} }
-          end
-          if not data.original.fields then
-            data.original.fields = {}
-          end
-          data.original.fields.summary = parsed.summary
-          data.original.fields.description = parsed.description
-          data.original_description = normalize_description(parsed.description)
-          if parsed.fields.assignee and parsed.fields.assignee ~= "" and parsed.fields.assignee ~= "Unassigned" then
-            data.original.fields.assignee = { displayName = parsed.fields.assignee }
-          else
-            data.original.fields.assignee = nil
-          end
-          if parsed.fields.status and parsed.fields.status ~= "" then
-            data.original.fields.status = { name = parsed.fields.status }
-          end
-          if parsed.fields.type and parsed.fields.type ~= "" then
-            data.original.fields.issuetype = { name = parsed.fields.type }
-          end
-          if parsed.fields.components and parsed.fields.components ~= "" then
-            local comps = {}
-            for comp in string.gmatch(parsed.fields.components, "[^,]+") do
-              comp = vim.trim(comp)
-              if comp ~= "" then
-                table.insert(comps, { name = comp })
-              end
-            end
-            data.original.fields.components = comps
-          end
-          data.original.fields.labels = util.labels_to_list(parsed.fields.labels)
-          if parsed.fields.project and parsed.fields.project ~= "" then
-            data.original.fields.project = { key = parsed.fields.project }
-          end
-          vim.api.nvim_buf_set_name(buf, "jira-oil://issue/" .. created_key)
-          cli.clear_cache("all")
-          vim.notify("Issue created successfully: " .. created_key, vim.log.levels.INFO)
-        else
-          cli.clear_cache("all")
-          vim.notify("Issue created successfully!", vim.log.levels.INFO)
-        end
+        fields.assignee = nil
+      end
+      fields.status = { name = config.options.defaults.status }
+      if parsed.fields.type and parsed.fields.type ~= "" then fields.issuetype = { name = parsed.fields.type } end
+      fields.components = {}
+      for comp in string.gmatch(parsed.fields.components or "", "[^,]+") do
+        comp = vim.trim(comp)
+        if comp ~= "" then table.insert(fields.components, { name = comp }) end
+      end
+      fields.labels = util.labels_to_list(parsed.fields.labels)
+      if parsed.fields.project and parsed.fields.project ~= "" then fields.project = { key = parsed.fields.project } end
+      if vim.api.nvim_buf_is_valid(buf) then vim.api.nvim_buf_set_name(buf, "jira-oil://issue/" .. created_key) end
+      local function complete(failed)
+        cli.clear_cache("all")
+        if not failed then vim.notify("Issue created successfully: " .. created_key, vim.log.levels.INFO) end
         if vim.api.nvim_buf_is_valid(buf) then
-          vim.bo[buf].modified = false
+          M.capture_draft(buf)
+          vim.bo[buf].modified = failed or not vim.deep_equal(saved_lines, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
         end
+      end
+      local status = parsed.fields.status or ""
+      if status ~= "" and status ~= fields.status.name then
+        cli.exec({ "issue", "move", created_key, status }, function(_, move_err, move_code)
+          if move_code ~= 0 then
+            vim.notify("Issue created, but its status update failed: " .. (move_err or ""), vim.log.levels.ERROR)
+            complete(true)
+          else
+            fields.status = { name = status }
+            complete(false)
+          end
+        end)
+      else
+        complete(false)
       end
     end)
   else
     -- Compute diff against original -- only mutate what actually changed
-    local diff = compute_issue_diff(data, parsed)
-
     local steps = {}
 
-    -- Step 1: Edit summary and/or description (combined into one `jira issue edit` call)
-    if diff.summary_changed or diff.description_changed then
+    -- Step 1: Edit fields before any transition requiring them.
+    if diff.summary_changed or diff.description_changed or #diff.custom_field_updates > 0 then
       table.insert(steps, {
-        desc = "update summary/description",
+        desc = "update issue fields",
         fn = function(next_cb)
           local args = { "issue", "edit", data.key, "--no-input" }
           if diff.summary_changed then
@@ -1032,11 +1132,13 @@ function M.save(buf)
             table.insert(args, "--body")
             table.insert(args, diff.new_description)
           end
+          custom.append_args(args, diff.custom_field_updates, false)
           cli.exec(args, function(_, stderr, code)
             if code ~= 0 then
               vim.notify("Failed to update " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
               next_cb(true)
             else
+              M.commit_custom_fields(data.key, diff.custom_field_updates)
               next_cb(false)
             end
           end)
@@ -1296,7 +1398,8 @@ function M.save(buf)
         M.clear_draft(data.key)
       end
       if vim.api.nvim_buf_is_valid(buf) then
-        vim.bo[buf].modified = false
+        M.capture_draft(buf)
+        vim.bo[buf].modified = has_errors or not vim.deep_equal(saved_lines, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
       end
     end)
   end
@@ -1309,6 +1412,10 @@ function M.reset(buf)
     M.clear_draft(data.key)
   end
   local issue = data.original or { fields = {} }
+  if data.create_without_key then
+    vim.notify("Find the created issue key in Jira and reopen it before resetting.", vim.log.levels.ERROR)
+    return
+  end
   render_issue(buf, data.key, issue, data.is_new)
 end
 

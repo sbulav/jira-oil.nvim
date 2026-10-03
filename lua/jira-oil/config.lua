@@ -169,6 +169,8 @@ local default_config = {
   -- customfield name (e.g. "customfield_10008") or a list of candidates
   -- tried in order. Leave empty to rely on `fields.parent.key` only.
   epic_field = "",
+  -- Ordered, tenant-local definitions: id, cli_name, type; optional label/options/required.
+  custom_fields = {},
   create = {
     available_components = {},
   },
@@ -217,6 +219,7 @@ function M.setup(opts)
     end
   end
 
+  require("jira-oil.custom_fields").validate_definitions(new_conf.custom_fields)
   M.options = new_conf
 end
 
