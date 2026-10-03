@@ -391,12 +391,11 @@ local function render_issue(buf, key, issue, is_new, original)
     table.insert(lines, l)
   end
 
-  local old_undolevels = vim.bo[buf].undolevels
-  vim.bo[buf].undolevels = -1
-  vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].modified = false
-  vim.bo[buf].undolevels = old_undolevels
+  util.without_undo(buf, function()
+    vim.bo[buf].modifiable = true
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    vim.bo[buf].modified = false
+  end)
 
   M.cache[buf] = {
     key = key,

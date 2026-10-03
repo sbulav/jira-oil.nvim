@@ -1,5 +1,40 @@
 local M = {}
 
+---Suspend undo for a buffer until every overlapping operation has finished.
+---The returned release function is idempotent and safe after buffer deletion.
+---@param buf number
+---@return function
+function M.suspend_undo(buf)
+  local count = vim.b[buf].jira_oil_undo_suspensions or 0
+  if count == 0 then
+    vim.b[buf].jira_oil_loading_undolevels = vim.bo[buf].undolevels
+  end
+  vim.b[buf].jira_oil_undo_suspensions = count + 1
+  vim.bo[buf].undolevels = -1
+  local released = false
+  return function()
+    if released then return end
+    released = true
+    if not vim.api.nvim_buf_is_valid(buf) then return end
+    local remaining = vim.b[buf].jira_oil_undo_suspensions - 1
+    if remaining == 0 then
+      vim.bo[buf].undolevels = vim.b[buf].jira_oil_loading_undolevels
+      vim.b[buf].jira_oil_loading_undolevels = nil
+      vim.b[buf].jira_oil_undo_suspensions = nil
+    else
+      vim.b[buf].jira_oil_undo_suspensions = remaining
+    end
+  end
+end
+
+---Run a synchronous buffer rewrite within the same undo suspension protocol.
+function M.without_undo(buf, fn)
+  local release = M.suspend_undo(buf)
+  local ok, err = pcall(fn)
+  release()
+  if not ok then error(err, 0) end
+end
+
 ---Format a string to a fixed display width
 ---@param str string
 ---@param width number
