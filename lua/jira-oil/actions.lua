@@ -75,8 +75,8 @@ local function selected_issue_keys(buf)
   end
 
   local view = require("jira-oil.view")
-  local first = vim.fn.getpos("'<")[2]
-  local last = vim.fn.getpos("'>")[2]
+  local first = vim.fn.getpos("v")[2]
+  local last = vim.fn.getpos(".")[2]
   if first == 0 or last == 0 then
     local key = current_issue_key(buf)
     return key and { key } or {}
