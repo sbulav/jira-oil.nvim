@@ -155,7 +155,7 @@ function M.compute_diff(buf)
 
         if draft and draft.diff and draft.diff.queued_for_removal then
           eff_status = config.options.defaults.close_status
-          table.insert(updates, "REMOVE FROM VIEW (Close Issue)")
+          table.insert(updates, "Close issue " .. item.key .. ": " .. orig.status .. " -> " .. eff_status)
         elseif eff_status ~= orig.status then
           table.insert(updates, "status: " .. orig.status .. " -> " .. eff_status)
         end
@@ -200,7 +200,7 @@ function M.compute_diff(buf)
 
           if draft and draft.diff and draft.diff.queued_for_removal then
             eff_status = config.options.defaults.close_status
-            table.insert(updates, "REMOVE FROM VIEW (Close Issue)")
+            table.insert(updates, "Close issue " .. key .. ": " .. orig.status .. " -> " .. eff_status)
           elseif eff_status ~= orig.status then
             table.insert(updates, "status: " .. orig.status .. " -> " .. eff_status)
           end
@@ -231,7 +231,7 @@ function M.compute_diff(buf)
   -- on deleted backlog lines (adding them to the active sprint) and a no-op
   -- "unsupported" warning on deleted sprint lines. Section moves must be
   -- explicit -- relocate the line between Sprint/Backlog in the `all` view
-  -- (handled by the section diff above) or use the removal queue (dd).
+  -- (handled by the section diff above) or use the explicit close queue (gX).
   local removed_keys = {}
   for _, item in ipairs(original) do
     if not current_by_key[item.key] then
@@ -245,7 +245,7 @@ function M.compute_diff(buf)
         .. " deleted line(s): "
         .. table.concat(removed_keys, ", ")
         .. ". Use >> / << in the jira-oil://all view to move between Sprint and Backlog, "
-        .. "or 'dd' to queue an issue for removal.",
+        .. "or 'gX' to queue an issue close.",
       vim.log.levels.WARN
     )
   end
@@ -275,7 +275,11 @@ function M.save(buf)
     if m.type == "CREATE" then
       table.insert(lines, "[CREATE] New Task: " .. (m.item.summary or ""))
     elseif m.type == "UPDATE" then
-      table.insert(lines, "[UPDATE] " .. m.key .. ": " .. table.concat(m.updates, ", "))
+      if m.updates[1] and m.updates[1]:match("^Close issue ") then
+        table.insert(lines, table.concat(m.updates, ", "))
+      else
+        table.insert(lines, "[UPDATE] " .. m.key .. ": " .. table.concat(m.updates, ", "))
+      end
     elseif m.type == "MOVE" then
       table.insert(lines, "[MOVE] " .. m.key .. " to " .. m.dest)
     end
@@ -556,7 +560,7 @@ function M.execute_mutations(buf, mutations)
           if update:match("^summary:") then summary_changed = true end
           if update:match("^description:") then description_changed = true end
           if update:match("^assignee:") then assignee_changed = true end
-          if update:match("^status:") then status_changed = true end
+          if update:match("^status:") or update:match("^Close issue ") then status_changed = true end
           if update:match("^labels:") then labels_changed = true end
         end
 

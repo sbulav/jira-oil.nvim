@@ -1,0 +1,153 @@
+local t = require("minitest")
+local h = require("helpers")
+local config = require("jira-oil.config")
+local actions = require("jira-oil.actions")
+local view = require("jira-oil.view")
+local scratch = require("jira-oil.scratch")
+local mutator = require("jira-oil.mutator")
+local cli = require("jira-oil.cli")
+
+local function feed(keys)
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
+end
+
+local function with_list(opts, fn)
+  local options, drafts = config.options, scratch.drafts
+  local previous = vim.api.nvim_get_current_buf()
+  local register = vim.fn.getreginfo('"')
+  config.setup(vim.tbl_deep_extend("force", { defaults = { project = "PROJ", close_status = "Resolved" } }, opts or {}))
+  scratch.drafts = {}
+  local buf = h.list_buf({ { key = "PROJ-1", summary = "first" }, { key = "PROJ-2", summary = "second" } })
+  vim.api.nvim_set_current_buf(buf)
+  actions.setup(buf)
+  vim.api.nvim_win_set_cursor(0, { 1, 0 })
+  local ok, err = pcall(function()
+    h.stub(vim, "notify", function() end, function() fn(buf) end)
+  end)
+  feed("<Esc>")
+  vim.fn.setreg('"', register)
+  config.options, scratch.drafts = options, drafts
+  vim.api.nvim_set_current_buf(previous)
+  view.cache[buf], view.mark_keys[buf] = nil, nil
+  vim.api.nvim_buf_delete(buf, { force = true })
+  if not ok then error(err) end
+end
+
+local function marker_text(buf)
+  local text = {}
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, view.ns_draft, 0, -1, { details = true })) do
+    for _, chunk in ipairs(mark[4].virt_text or {}) do table.insert(text, chunk[1]) end
+  end
+  return table.concat(text)
+end
+
+t.test("close queue: gX toggles the explicit close marker and help description", function()
+  with_list({}, function(buf)
+    t.eq(vim.fn.maparg("gX", "n", false, true).desc, "Queue issue close")
+    t.eq(vim.fn.maparg("dd", "n", false, true), {})
+    feed("gX")
+    t.ok(scratch.peek_draft("PROJ-1").diff.queued_for_removal)
+    t.ok(marker_text(buf):find("[Queued: Close issue]", 1, true))
+    local mutations = mutator.compute_diff(buf)
+    t.eq(mutations[1].updates, { "Close issue PROJ-1: Open -> Resolved" })
+    feed("gX")
+    t.ok(not scratch.has_draft("PROJ-1"))
+    t.eq(marker_text(buf), "")
+    t.eq(mutator.compute_diff(buf), {})
+  end)
+end)
+
+t.test("close queue: cancelling preserves an existing issue draft", function()
+  with_list({}, function(buf)
+    scratch.drafts["PROJ-1"] = {
+      parsed = { fields = {}, summary = "changed summary" },
+      diff = { summary_changed = true },
+    }
+    feed("gXgX")
+    t.ok(scratch.has_draft("PROJ-1"))
+    t.eq(scratch.peek_draft("PROJ-1").parsed.summary, "changed summary")
+    t.eq(mutator.compute_diff(buf)[1].item.summary, "changed summary")
+    t.ok(not marker_text(buf):find("Queued:", 1, true))
+  end)
+end)
+
+t.test("close queue: plain dd deletes a line and saving executes no Jira mutations", function()
+  with_list({}, function(buf)
+    feed("dd")
+    t.eq(vim.api.nvim_buf_line_count(buf), 1)
+    local mutations, removed = mutator.compute_diff(buf)
+    t.eq(mutations, {})
+    t.eq(removed, { "PROJ-1" })
+    t.ok(not scratch.has_draft("PROJ-1"))
+    h.stub(cli, "exec", function() error("line deletion must never mutate Jira") end, function()
+      mutator.save(buf)
+    end)
+    t.eq(vim.bo[buf].modified, false)
+  end)
+end)
+
+t.test("close queue: gX on an unkeyed row leaves it intact", function()
+  with_list({}, function(buf)
+    vim.api.nvim_buf_set_lines(buf, 2, 2, false, { "Open            │ A               │ new issue" })
+    vim.api.nvim_win_set_cursor(0, { 3, 0 })
+    local before = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    feed("gX")
+    t.eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), before)
+    t.eq(scratch.drafts, {})
+  end)
+end)
+
+t.test("close queue: users can choose a different explicit close key", function()
+  with_list({ keymaps = { gX = false, gC = { "actions.queue_removal", mode = "n" } } }, function()
+    t.eq(vim.fn.maparg("gX", "n", false, true), {})
+    t.eq(vim.fn.maparg("gC", "n", false, true).desc, "Queue issue close")
+    feed("gC")
+    t.ok(scratch.peek_draft("PROJ-1").diff.queued_for_removal)
+  end)
+end)
+
+t.test("close queue: save confirmation names the close transition and Y applies it", function()
+  with_list({}, function(buf)
+    feed("gX")
+    local commands, refreshes = {}, 0
+    h.stub(cli, "exec", function(args, cb)
+      table.insert(commands, args)
+      cb("", "", 0)
+    end, function()
+      h.stub(view, "refresh", function() refreshes = refreshes + 1 end, function()
+        mutator.save(buf)
+        local confirm_buf = vim.api.nvim_get_current_buf()
+        local confirm_win = vim.api.nvim_get_current_win()
+        local lines = vim.api.nvim_buf_get_lines(confirm_buf, 0, -1, false)
+        t.eq(lines[2], "Close issue PROJ-1: Open -> Resolved")
+        t.eq(#commands, 0, "closing must wait for confirmation")
+        -- Flush the scheduled focus callback before exercising the dialog mapping.
+        vim.wait(10, function() return false end)
+        feed("Y")
+        t.ok(not vim.api.nvim_win_is_valid(confirm_win))
+      end)
+    end)
+    t.eq(commands, { { "issue", "move", "PROJ-1", "Resolved" } })
+    t.eq(refreshes, 1)
+    t.ok(not scratch.has_draft("PROJ-1"))
+  end)
+end)
+
+t.test("close queue: failed close preserves the pending close for retry", function()
+  with_list({}, function(buf)
+    feed("gX")
+    local commands = {}
+    h.stub(cli, "exec", function(args, cb)
+      table.insert(commands, args)
+      cb("", "failure", 1)
+    end, function()
+      h.stub(view, "refresh", function() error("failed close must not refresh") end, function()
+        mutator.execute_mutations(buf, mutator.compute_diff(buf))
+      end)
+    end)
+    t.eq(commands, { { "issue", "move", "PROJ-1", "Resolved" } })
+    t.ok(scratch.has_draft("PROJ-1"))
+    t.eq(mutator.compute_diff(buf)[1].item.status, "Resolved")
+    t.ok(vim.bo[buf].modified)
+  end)
+end)

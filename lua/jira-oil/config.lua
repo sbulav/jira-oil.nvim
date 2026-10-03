@@ -106,7 +106,7 @@ local default_config = {
     ["<C-c>"] = { "actions.create", mode = "n" },
     ["gB"] = { "actions.open_in_browser", mode = "n" },
     ["<C-y>"] = { "actions.yank_issue_key", mode = { "n", "v" } },
-    ["dd"] = { "actions.queue_removal", mode = "n" },
+    ["gX"] = { "actions.queue_removal", mode = "n" },
     [">>"] = { "actions.move_to_sprint", mode = "n" },
     ["<<"] = { "actions.move_to_backlog", mode = "n" },
     ["+"] = { "actions.cycle_status", mode = "n" },
