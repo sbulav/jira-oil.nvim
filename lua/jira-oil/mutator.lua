@@ -692,7 +692,7 @@ function M.execute_mutations(buf, mutations)
       elseif m.type == "MOVE" then
         if m.dest == "SPRINT" then
           if sprint_id then
-            cli.exec({ "sprint", "add", sprint_id, m.key }, function(stdout, stderr, code)
+            cli.exec({ "sprint", "add", tostring(sprint_id), m.key }, function(stdout, stderr, code)
               if code ~= 0 then
                 vim.notify("Failed to move to sprint " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
               end
