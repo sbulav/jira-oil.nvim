@@ -548,7 +548,6 @@ M.cycle_status = {
   desc = "Cycle status forward",
   callback = function(opts)
     local view = require("jira-oil.view")
-    local scratch = require("jira-oil.scratch")
     local parser = require("jira-oil.parser")
     local buf = (opts and opts.buf) or vim.api.nvim_get_current_buf()
     
@@ -596,22 +595,13 @@ M.cycle_status = {
       end
       
       local new_status = statuses[next_idx]
-      local draft = scratch.peek_draft(key) or { diff = {}, parsed = parsed }
-      draft.parsed.fields = draft.parsed.fields or {}
-      draft.parsed.fields.status = new_status
-      draft.diff.status_changed = true
-      scratch.drafts[key] = draft
-      
       -- We need to update the line in the buffer
       local new_parts = vim.split(line, "│", { plain = true })
       -- Maintain padding
       local original_part = new_parts[current_col_idx]
       local icon = require("jira-oil.util").get_icon(config.options.view.status_icons, new_status)
       local new_val = icon .. new_status
-      local padded = require("jira-oil.util").pad_right(new_val, #original_part)
-      if #padded < #original_part then
-         padded = padded .. string.rep(" ", #original_part - #padded)
-      end
+      local padded = require("jira-oil.util").pad_right(new_val, vim.api.nvim_strwidth(original_part))
       new_parts[current_col_idx] = padded
       
       local new_line = table.concat(new_parts, "│")
