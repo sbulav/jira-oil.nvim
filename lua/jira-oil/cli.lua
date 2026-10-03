@@ -288,7 +288,7 @@ function M.exec(args, callback)
   local cmd = { config.options.cli.cmd }
   vim.list_extend(cmd, args)
 
-  vim.system(cmd, { text = true, timeout = config.options.cli.timeout }, function(obj)
+  local function complete(obj)
     vim.schedule(function()
       active_requests = active_requests - 1
       if active_requests == 0 then
@@ -296,7 +296,13 @@ function M.exec(args, callback)
       end
       callback(obj.stdout, obj.stderr, obj.code)
     end)
-  end)
+  end
+
+  local ok, err = pcall(vim.system, cmd, { text = true, timeout = config.options.cli.timeout }, complete)
+  if not ok then
+    complete({ code = 1, stderr = "Unable to run jira-cli (cli.cmd = " .. tostring(config.options.cli.cmd)
+      .. "); jira-cli not found or could not start: " .. tostring(err) })
+  end
 end
 
 ---Execute a Jira CLI command synchronously
@@ -308,7 +314,13 @@ function M.exec_sync(args)
   local cmd = { config.options.cli.cmd }
   vim.list_extend(cmd, args)
 
-  local obj = vim.system(cmd, { text = true, timeout = config.options.cli.timeout }):wait()
+  local ok, obj = pcall(function()
+    return vim.system(cmd, { text = true, timeout = config.options.cli.timeout }):wait()
+  end)
+  if not ok then
+    return nil, "Unable to run jira-cli (cli.cmd = " .. tostring(config.options.cli.cmd)
+      .. "); jira-cli not found or could not start: " .. tostring(obj), 1
+  end
   return obj.stdout, obj.stderr, obj.code
 end
 
