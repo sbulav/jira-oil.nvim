@@ -453,7 +453,7 @@ M.paste_before = {
 }
 
 M.queue_removal = {
-  desc = "Queue removal from current section",
+  desc = "Queue issue close",
   callback = function(opts)
     local view = require("jira-oil.view")
     local scratch = require("jira-oil.scratch")
@@ -465,7 +465,7 @@ M.queue_removal = {
     local row = vim.api.nvim_win_get_cursor(0)[1] - 1
     local key = view.get_key_at_line(buf, row)
     if not key or key == "" then
-      vim.cmd.normal({ args = { "dd" }, bang = true })
+      vim.notify("No Jira issue key to close.", vim.log.levels.WARN)
       return
     end
     

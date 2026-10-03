@@ -240,7 +240,7 @@ local function apply_decorations(buf, lines, issue_keys, sprint_count, backlog_c
           local sign_hl = "JiraOilSignChanged"
 
           if draft_data.queued_for_removal then
-             virt_text = " [Queued: Remove from current section]"
+             virt_text = " [Queued: Close issue]"
              sign_text = "-"
              sign_hl = "JiraOilSignRemoved"
           end
@@ -1108,7 +1108,7 @@ function M.update_draft_marker_for_key(key)
             local sign_hl = "JiraOilSignChanged"
 
             if draft_diff.queued_for_removal then
-               virt_text = " [Queued: Remove from current section]"
+               virt_text = " [Queued: Close issue]"
                sign_text = "-"
                sign_hl = "JiraOilSignRemoved"
             end

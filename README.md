@@ -169,7 +169,7 @@ Use this as a complete starting point. Replace placeholder values (`PROJ`, `TEAM
         ["<C-c>"] = { "actions.create", mode = "n" },
         ["gB"] = { "actions.open_in_browser", mode = "n" },
         ["<C-y>"] = { "actions.yank_issue_key", mode = { "n", "v" } },
-        ["dd"] = { "actions.queue_removal", mode = "n" },
+        ["gX"] = { "actions.queue_removal", mode = "n" },
         [">>"] = { "actions.move_to_sprint", mode = "n" },
         ["<<"] = { "actions.move_to_backlog", mode = "n" },
         ["ga"] = { "actions.filter_by_assignee", mode = "n" },
@@ -261,6 +261,15 @@ PROJ-102 │ To Do       │ john │ Update README       │ docs
 - **Pivot the current view**: `ga` filters by assignee, `gS` by status, `gp` by project, `g/` prompts for summary text
 - **Navigate up / clear filters**: `-` opens the parent view, `gu` clears the active filters
 
+`gX` queues closing the issue in Jira using `defaults.close_status`. The row shows
+`[Queued: Close issue]`; saving displays the issue key and status transition for
+confirmation. Press `gX` again to cancel the queued close without losing other edits.
+
+`dd` performs a normal Neovim line deletion. Saving does not close, delete, or move
+the deleted issue in Jira. Its row can reappear on save or refresh. Custom keymaps
+can move the explicit close action to another key; disable `gX` with
+`keymaps = { gX = false, gC = { "actions.queue_removal", mode = "n" } }`.
+
 ### Scratch Buffer (`jira-oil://issue/PROJ-101`)
 
 Press `<CR>` on an issue to open a structured scratch buffer:
@@ -317,7 +326,8 @@ again. Stored drafts survive those refreshes.
 | `gR` | Reset unsaved changes |
 | `gB` | Open issue in browser |
 | `<C-y>` | Yank issue key (works in visual mode) |
-| `dd` | Queue removal from current section |
+| `gX` | Queue issue close (press again to cancel) |
+| `dd` | Delete the buffer line; no Jira mutation |
 | `>>` | Move issue to sprint |
 | `<<` | Move issue to backlog |
 | `ga` | Filter by current assignee |
@@ -413,7 +423,7 @@ require("jira-oil").setup({
     ["<C-c>"] = { "actions.create", mode = "n" },
     ["gB"] = { "actions.open_in_browser", mode = "n" },
     ["<C-y>"] = { "actions.yank_issue_key", mode = { "n", "v" } },
-    ["dd"] = { "actions.queue_removal", mode = "n" },
+    ["gX"] = { "actions.queue_removal", mode = "n" },
     [">>"] = { "actions.move_to_sprint", mode = "n" },
     ["<<"] = { "actions.move_to_backlog", mode = "n" },
     ["ga"] = { "actions.filter_by_assignee", mode = "n" },
