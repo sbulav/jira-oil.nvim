@@ -88,7 +88,7 @@ function M.compute_diff(buf)
               parsed.assignee = config.options.defaults.assignee
             end
             if not parsed.status or parsed.status == "" then
-              parsed.status = "To Do"
+              parsed.status = config.options.defaults.status
             end
             table.insert(current, parsed)
           end
@@ -154,7 +154,7 @@ function M.compute_diff(buf)
         end
 
         if draft and draft.diff and draft.diff.queued_for_removal then
-          eff_status = "Closed"
+          eff_status = config.options.defaults.close_status
           table.insert(updates, "REMOVE FROM VIEW (Close Issue)")
         elseif eff_status ~= orig.status then
           table.insert(updates, "status: " .. orig.status .. " -> " .. eff_status)
@@ -199,7 +199,7 @@ function M.compute_diff(buf)
           local eff_description = parsed.description or ""
 
           if draft and draft.diff and draft.diff.queued_for_removal then
-            eff_status = "Closed"
+            eff_status = config.options.defaults.close_status
             table.insert(updates, "REMOVE FROM VIEW (Close Issue)")
           elseif eff_status ~= orig.status then
             table.insert(updates, "status: " .. orig.status .. " -> " .. eff_status)
@@ -369,7 +369,7 @@ function M.execute_mutations(buf, mutations)
       item.key = m.created_key
       item.is_new, item.row, item.source_key = nil, nil, nil
       if m.status_failed then
-        item.status = config.options.defaults.status or "To Do"
+        item.status = config.options.defaults.status
       end
       table.insert(data.original, item)
       original_by_key[item.key] = item
@@ -504,7 +504,7 @@ function M.execute_mutations(buf, mutations)
       end
 
       local status = item.status or ""
-      if status ~= "" and status ~= "To Do" and status ~= config.options.defaults.status then
+      if status ~= "" and status ~= config.options.defaults.status then
         cli.exec({ "issue", "move", key, status }, function(_, stderr, code)
           if code ~= 0 then
             vim.notify("Failed to set status for " .. key .. ": " .. (stderr or ""), vim.log.levels.ERROR)

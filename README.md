@@ -211,6 +211,7 @@ Use this as a complete starting point. Replace placeholder values (`PROJ`, `TEAM
         assignee = vim.env.JIRA_USER or vim.env.JIRA_ASSIGNEE or "",
         issue_type = "Task",
         status = "Open",
+        close_status = "Closed",
       },
 
       -- Optional: set this only if your Jira tenant uses a custom epic field
@@ -452,7 +453,9 @@ require("jira-oil").setup({
     assignee = vim.env.JIRA_USER or vim.env.JIRA_ASSIGNEE or "",
     issue_type = "Task",
     status = "Open",
+    close_status = "Closed",
   },
+  statuses = { "Open", "To Do", "In Progress", "In Review", "Done", "Closed", "Blocked" },
   -- Optional: set if your Jira instance stores epic link in a custom field
   epic_field = "",
   create = {
@@ -460,6 +463,28 @@ require("jira-oil").setup({
   },
 })
 ```
+
+### Workflow Statuses
+
+The default status list is `{ "Open", "To Do", "In Progress", "In Review", "Done", "Closed", "Blocked" }`.
+Configure `statuses` to replace the list used by `+` cycling and status completion:
+
+```lua
+require("jira-oil").setup({
+  defaults = {
+    status = "Ready",       -- Initial status for new issues; match Jira's creation status
+    close_status = "Resolved", -- Status used when saving queued removals
+  },
+  statuses = { "Ready", "Doing", "Resolved" },
+})
+```
+
+New list rows with an empty status use `defaults.status` (default `"Open"`),
+matching the issue editor. A different status entered on a new row is applied
+as a transition after creation. The plugin assumes Jira creates issues in
+`defaults.status`; configure it to match your workflow. Statuses and transitions
+are not discovered from Jira. An empty `statuses` list disables cycling and
+status completion.
 
 ### Instance-Specific Configuration
 

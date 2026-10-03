@@ -45,7 +45,7 @@ function M.omnifunc(findstart, base)
       local col_name = cols[current_col_idx] and cols[current_col_idx].name
       
       if col_name == "status" then
-        local statuses = { "Open", "To Do", "In Progress", "In Review", "Done", "Closed", "Blocked" }
+        local statuses = config.options.statuses
         for _, s in ipairs(statuses) do
           if s:lower():match("^" .. vim.trim(base):lower()) then
             table.insert(completions, {
