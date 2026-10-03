@@ -858,8 +858,11 @@ local function load_list(buf, uri)
   M.open_seq[buf] = (M.open_seq[buf] or 0) + 1
   local seq = M.open_seq[buf]
 
+  local restore_undo
   local function is_stale_request()
-    return (M.open_seq[buf] ~= seq) or (not vim.api.nvim_buf_is_valid(buf))
+    local stale = (M.open_seq[buf] ~= seq) or (not vim.api.nvim_buf_is_valid(buf))
+    if stale and restore_undo then restore_undo() end
+    return stale
   end
 
   vim.bo[buf].buftype = "acwrite"
@@ -869,9 +872,7 @@ local function load_list(buf, uri)
   vim.b[buf].jira_oil_kind = "list"
 
   -- Disable undo while loading
-  local old_undolevels = vim.b[buf].jira_oil_loading_undolevels or vim.bo[buf].undolevels
-  vim.b[buf].jira_oil_loading_undolevels = old_undolevels
-  vim.bo[buf].undolevels = -1
+  restore_undo = util.suspend_undo(buf)
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Loading " .. spec.view_label .. "..." })
   vim.bo[buf].modified = false
@@ -914,8 +915,7 @@ local function load_list(buf, uri)
     vim.bo[buf].omnifunc = "v:lua.require('jira-oil.completion').omnifunc"
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.bo[buf].modified = false
-    vim.bo[buf].undolevels = old_undolevels
-    vim.b[buf].jira_oil_loading_undolevels = nil
+    restore_undo()
 
     apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, target, nil)
     actions.setup(buf)
@@ -1061,12 +1061,11 @@ function M.reset(buf, opts)
     end
   end
 
-  local old_undolevels = vim.bo[buf].undolevels
-  vim.bo[buf].undolevels = -1
-  vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].modified = false
-  vim.bo[buf].undolevels = old_undolevels
+  util.without_undo(buf, function()
+    vim.bo[buf].modifiable = true
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    vim.bo[buf].modified = false
+  end)
 
   -- Recount sections for the header overlays
   local sprint_count, backlog_count = 0, 0
