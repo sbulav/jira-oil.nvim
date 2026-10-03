@@ -162,7 +162,9 @@ local default_config = {
     assignee = vim.env.JIRA_USER or vim.env.JIRA_ASSIGNEE or "",
     issue_type = "Task",
     status = "Open",
+    close_status = "Closed",
   },
+  statuses = { "Open", "To Do", "In Progress", "In Review", "Done", "Closed", "Blocked" },
   -- Field(s) on a Jira issue holding the epic link. Accepts a single
   -- customfield name (e.g. "customfield_10008") or a list of candidates
   -- tried in order. Leave empty to rely on `fields.parent.key` only.

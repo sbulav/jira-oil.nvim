@@ -583,7 +583,8 @@ M.cycle_status = {
       if not parsed then return end
       
       local current_status = parsed.status
-      local statuses = { "Open", "To Do", "In Progress", "In Review", "Done", "Closed", "Blocked" }
+      local statuses = config.options.statuses
+      if #statuses == 0 then return end
       local next_idx = 1
       
       for i, s in ipairs(statuses) do
