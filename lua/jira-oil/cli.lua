@@ -380,9 +380,9 @@ function M.clear_cache(scope)
 end
 
 ---Fetch active sprint ID
----@param callback function(id)
+---@param callback fun(id: number|nil)
 function M.get_active_sprint_id(callback)
-  local args = { "sprint", "list", "--state", "active", "--raw" }
+  local args = { "sprint", "list", "--state", "active", "--table", "--plain", "--columns", "id,state" }
   if config.options.defaults.project ~= "" then
     table.insert(args, "-p")
     table.insert(args, config.options.defaults.project)
@@ -393,13 +393,16 @@ function M.get_active_sprint_id(callback)
       callback(nil)
       return
     end
-    local lines = vim.split(stdout, "\n", { trimempty = true })
-    if #lines > 1 then
-      local parts = vim.split(lines[2], "\t")
-      callback(parts[1])
-    else
-      callback(nil)
+    -- --raw alone still opens the sprint explorer. The plain table has an
+    -- ID/STATE header followed by whitespace-delimited rows (no sprint names).
+    for _, line in ipairs(vim.split(stdout, "\n", { trimempty = true })) do
+      local id = line:match("^%s*(%d+)%s+active%s*$")
+      if id then
+        callback(tonumber(id))
+        return
+      end
     end
+    callback(nil)
   end)
 end
 
