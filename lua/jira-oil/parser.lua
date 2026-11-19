@@ -40,7 +40,10 @@ function M.format_line(issue)
       val = issue.key or ""
     end
 
-    if col.width then
+    if col.name == "labels" and col.width then
+      -- Labels are edited as a set, so removing a clipped label would be ambiguous.
+      table.insert(parts, val .. string.rep(" ", math.max(0, col.width - vim.api.nvim_strwidth(val))))
+    elseif col.width then
       table.insert(parts, util.pad_right(val, col.width))
     else
       table.insert(parts, val)

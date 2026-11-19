@@ -116,13 +116,6 @@ Use this as a complete starting point. Replace placeholder values (`PROJ`, `TEAM
           order_by = "created",
           prefill_search = "",
         },
-        epic_issues = {
-          args = { "issue", "list" },
-          columns = { "type", "key", "assignee", "status", "summary", "labels" },
-          filters = { "-s~done", "-s~closed" },
-          order_by = "status",
-          prefill_search = "",
-        },
       },
 
       view = {
@@ -133,7 +126,6 @@ Use this as a complete starting point. Replace placeholder values (`PROJ`, `TEAM
           { name = "labels", width = 20 },
         },
         key_width = 12,
-        default_sort = "key",
         show_winbar = true,
         sections = {
           show_count = true,
@@ -289,7 +281,10 @@ Fix the login bug
 When the user clicks login, it crashes...
 ```
 
-Edit any field, including description and labels. Labels use a comma-separated format such as `backend, urgent`. Save to push changes. Drafts are captured automatically and shown in the list buffer with `[draft]`.
+Use comma-separated values for labels and components. The Labels column expands
+to show every value when the list includes it. Save from the issue editor or
+list to apply your draft. Set the issue type when creating an issue. Use Jira
+to change the type of an existing issue or to clear its description.
 
 Press `<C-c>` in the list buffer to create a new issue via scratch buffer.
 
@@ -308,9 +303,9 @@ Opening a different filter view keeps the previous list buffer hidden, including
 its edits.
 
 Use `gR` to reset the current list's edits and drafts and restore original values.
-Drafts for issues outside that list are kept. Refreshes after a successful save
-do not prompt; a delayed refresh is skipped if you have started editing list text
-again. Stored drafts survive those refreshes.
+Drafts for issues outside that list are kept. Each list accepts one save at a
+time. Changes you enter during a save or its automatic refresh stay pending.
+Retry a failed save to apply the remaining edits.
 
 ## Keymaps
 
@@ -372,12 +367,6 @@ require("jira-oil").setup({
       filters = { "-s~done", "-s~closed" },
       order_by = "created",
     },
-    epic_issues = {
-      args = { "issue", "list" },
-      columns = { "type", "key", "assignee", "status", "summary", "labels" },
-      filters = { "-s~done", "-s~closed" },
-      order_by = "status",
-    },
   },
   view = {
     columns = {
@@ -387,7 +376,6 @@ require("jira-oil").setup({
       { name = "labels", width = 20 },
     },
     key_width = 12,
-    default_sort = "key",
     show_winbar = true,
     sections = {
       show_count = true,
@@ -553,7 +541,7 @@ These values usually depend on your Jira tenant. Keep them in your local Neovim 
 
 - `defaults.project` (example: `"PROJ"`)
 - `cli.issues.team_jql` and `cli.issues.status_jql`
-- `cli.epics.args` / `cli.epic_issues.args` if your team uses custom filters
+- `cli.epics.args` to filter the epic picker
 - `create.available_components`
 - `epic_field` if your Jira uses a custom field for Epic link
 - `custom_fields` IDs, aliases, labels, and selection choices
@@ -662,7 +650,7 @@ Call `require("jira-oil").setup()` in your config. This registers the `jira-oil:
 
 Check `jira issue list` works in your terminal. Verify your project key in the plugin config.
 
-### Issue type or component picker shows nothing
+### Component picker shows nothing
 
 Configure `create.available_components` with your team's components:
 

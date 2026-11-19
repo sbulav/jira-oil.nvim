@@ -448,6 +448,37 @@ function M.get_issue(key, callback)
   end)
 end
 
+---Append the additions and removals for jira-cli's repeatable label/component flags.
+function M.append_list_delta(args, flag, previous, desired)
+  local before = util.labels_to_set(previous)
+  local after = util.labels_to_set(desired)
+  local old_names, new_names = vim.tbl_keys(before), vim.tbl_keys(after)
+  table.sort(old_names)
+  table.sort(new_names)
+  for _, name in ipairs(old_names) do
+    if not after[name] then vim.list_extend(args, { flag, "-" .. name }) end
+  end
+  for _, name in ipairs(new_names) do
+    if not before[name] then vim.list_extend(args, { flag, name }) end
+  end
+end
+
+---Assign or clear an issue's epic.
+---@param key string
+---@param epic_key string Empty to remove the issue from its epic.
+---@param callback fun(ok: boolean)
+function M.set_issue_epic(key, epic_key, callback)
+  local args = epic_key == "" and { "epic", "remove", key } or { "epic", "add", epic_key, key }
+  M.exec(args, function(_, stderr, code)
+    if code ~= 0 then
+      vim.notify("Failed to update epic for " .. key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+    else
+      M.clear_cache("issue:" .. key)
+    end
+    callback(code == 0)
+  end)
+end
+
 ---Fetch epics list for selection
 ---@param callback function(epics)
 function M.get_epics(callback)
