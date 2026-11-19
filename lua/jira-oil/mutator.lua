@@ -5,6 +5,14 @@ local util = require("jira-oil.util")
 local custom = require("jira-oil.custom_fields")
 
 local M = {}
+local saving = {}
+local create_anchors = vim.api.nvim_create_namespace("JiraOilPendingCreate")
+
+local function save_in_progress(buf)
+  if not saving[buf] then return false end
+  vim.notify("A Jira save is already in progress for this list.", vim.log.levels.WARN)
+  return true
+end
 
 ---Diff buffer lines with original to compute mutations.
 ---Issue identity is resolved via inline virtual-text extmarks placed by
@@ -121,11 +129,15 @@ function M.compute_diff(buf)
         local draft_parsed = draft and draft.parsed or nil
         local draft_diff = (draft and draft.diff) or {}
 
-        local eff_status = item.status
-        local eff_assignee = item.assignee
-        local eff_summary = item.summary
-        local orig_labels = orig.labels or ""
-        local eff_labels = util.labels_to_string(item.labels or orig_labels)
+        local remote = orig.remote or {}
+        local orig_status = remote.status or orig.status or ""
+        local orig_assignee = remote.assignee or orig.assignee or ""
+        local orig_summary = remote.summary or orig.summary or ""
+        local orig_labels = remote.labels or orig.labels or ""
+        local eff_status = item.status ~= orig.status and item.status or orig_status
+        local eff_assignee = item.assignee ~= orig.assignee and item.assignee or orig_assignee
+        local eff_summary = item.summary ~= orig.summary and item.summary or orig_summary
+        local eff_labels = item.labels ~= orig.labels and util.labels_to_string(item.labels) or orig_labels
         local eff_description = orig.description or ""
         local epic
 
@@ -136,7 +148,7 @@ function M.compute_diff(buf)
           if draft_diff.assignee_changed then
             eff_assignee = draft_parsed.fields.assignee
           end
-          if draft_diff.summary_changed and draft_parsed.summary ~= "" then
+          if draft_diff.summary_changed then
             eff_summary = draft_parsed.summary
           end
           if draft_diff.labels_changed then
@@ -157,12 +169,12 @@ function M.compute_diff(buf)
 
         if draft_diff.queued_for_removal then
           eff_status = config.options.defaults.close_status
-          table.insert(updates, "Close issue " .. item.key .. ": " .. orig.status .. " -> " .. eff_status)
-        elseif eff_status ~= orig.status then
-          table.insert(updates, "status: " .. orig.status .. " -> " .. eff_status)
+          table.insert(updates, "Close issue " .. item.key .. ": " .. orig_status .. " -> " .. eff_status)
+        elseif eff_status ~= orig_status then
+          table.insert(updates, "status: " .. orig_status .. " -> " .. eff_status)
         end
-        if eff_assignee ~= orig.assignee then table.insert(updates, "assignee: " .. orig.assignee .. " -> " .. eff_assignee) end
-        if eff_summary ~= orig.summary then table.insert(updates, "summary: " .. orig.summary .. " -> " .. eff_summary) end
+        if eff_assignee ~= orig_assignee then table.insert(updates, "assignee: " .. orig_assignee .. " -> " .. eff_assignee) end
+        if eff_summary ~= orig_summary then table.insert(updates, "summary: " .. orig_summary .. " -> " .. eff_summary) end
         local labels_changed = eff_labels ~= orig_labels
         if labels_changed then table.insert(updates, "labels: " .. orig_labels .. " -> " .. eff_labels) end
         if draft_diff.description_changed then table.insert(updates, "description: [changed]") end
@@ -171,10 +183,18 @@ function M.compute_diff(buf)
           local to = draft_diff.new_epic_key ~= "" and draft_diff.new_epic_key or "(none)"
           table.insert(updates, "epic: " .. from .. " -> " .. to)
         end
+        if draft_diff.components_changed then
+          table.insert(updates, "components: " .. draft_diff.orig_components .. " -> " .. draft_diff.new_components)
+        end
         local custom_updates = draft_diff.custom_field_updates or {}
         local custom_errors = draft_diff.custom_field_errors or {}
         if #custom_updates > 0 or #custom_errors > 0 then table.insert(updates, "custom fields: [changed]") end
-        if #updates > 0 then
+        local edit_error = scratch.edit_error(item.key, draft_diff.type_changed or (item.type and item.type ~= orig.type),
+          draft_diff.description_changed and eff_description or nil)
+        if not edit_error and eff_summary == "" and eff_summary ~= orig_summary then
+          edit_error = "Summary cannot be empty for " .. item.key .. "."
+        end
+        if #updates > 0 or edit_error then
           local effective_item = vim.deepcopy(item)
           effective_item.status = eff_status
           effective_item.assignee = eff_assignee
@@ -183,9 +203,20 @@ function M.compute_diff(buf)
           effective_item.previous_labels = labels_changed and orig_labels or nil
           effective_item.description = eff_description
           effective_item.epic = epic
+          effective_item.components = draft_diff.new_components
+          effective_item.previous_components = draft_diff.components_changed and draft_diff.orig_components or nil
+          effective_item.edit_error = edit_error
           effective_item.custom_field_updates = vim.deepcopy(custom_updates)
           effective_item.custom_field_errors = vim.deepcopy(custom_errors)
-          table.insert(mutations, { type = "UPDATE", key = item.key, updates = updates, item = effective_item })
+          local draft_fields = {}
+          for _, field in ipairs({ "summary", "description", "assignee", "status", "epic", "labels", "components" }) do
+            if draft_diff[field .. "_changed"] then draft_fields[field] = true end
+          end
+          table.insert(mutations, {
+            type = "UPDATE", key = item.key, updates = updates, item = effective_item, row_fields = item,
+            draft_fields = draft_fields, draft_buf = draft and draft.buf,
+            close = draft_diff.queued_for_removal, draft_status = draft_diff.new_status,
+          })
         end
       end
     end
@@ -219,8 +250,12 @@ function M.compute_diff(buf)
   return mutations, removed_keys
 end
 
-local function validate_custom_mutations(mutations)
+local function validate_mutations(mutations)
   for _, mutation in ipairs(mutations) do
+    if mutation.item and mutation.item.edit_error then
+      vim.notify(mutation.item.edit_error, vim.log.levels.ERROR)
+      return false
+    end
     local errors = mutation.item and mutation.item.custom_field_errors or {}
     if #errors > 0 then
       vim.notify(table.concat(errors, "\n"), vim.log.levels.ERROR)
@@ -233,8 +268,10 @@ end
 ---Save view and execute mutations
 ---@param buf number
 function M.save(buf)
+  if save_in_progress(buf) then return end
+  local tick = vim.api.nvim_buf_get_changedtick(buf)
   local mutations, removed_keys = M.compute_diff(buf)
-  if not validate_custom_mutations(mutations) then return end
+  if not validate_mutations(mutations) then return end
   if #mutations == 0 then
     -- Deleted lines produce no mutation (they're intentionally ignored). When a
     -- deletion is the only edit, restore the buffer from cache so the removed
@@ -299,6 +336,11 @@ function M.save(buf)
 
   vim.keymap.set("n", "Y", function()
     close()
+    if not vim.api.nvim_buf_is_valid(buf) then return end
+    if vim.api.nvim_buf_get_changedtick(buf) ~= tick then
+      vim.notify("The Jira list changed. Save again to review the current edits.", vim.log.levels.WARN)
+      return
+    end
     M.execute_mutations(buf, mutations)
   end, { buffer = bufnr, silent = true })
 
@@ -319,9 +361,17 @@ end
 ---@param buf number
 ---@param mutations table[]
 function M.execute_mutations(buf, mutations)
-  if not validate_custom_mutations(mutations) then return end
+  if not vim.api.nvim_buf_is_valid(buf) or save_in_progress(buf) or not validate_mutations(mutations) then return end
   local view = require("jira-oil.view")
   local scratch = require("jira-oil.scratch")
+  local keys = {}
+  for _, mutation in ipairs(mutations) do
+    if mutation.key then table.insert(keys, mutation.key) end
+  end
+  local release = scratch.reserve_updates(keys)
+  if not release then return end
+  saving[buf] = true
+  local saved_tick = vim.api.nvim_buf_get_changedtick(buf)
   local data = view.cache[buf]
   local original_by_key = {}
   for _, item in ipairs((data and data.original) or {}) do
@@ -335,7 +385,12 @@ function M.execute_mutations(buf, mutations)
   for _, m in ipairs(mutations) do
     if m.type == "CREATE" then
       has_create = true
-      break
+      local row = m.item.row
+      if row ~= nil then
+        m.create_anchor = vim.api.nvim_buf_set_extmark(buf, create_anchors, row, 0, {
+          end_row = row + 1, end_col = 0, end_right_gravity = false, invalidate = true,
+        })
+      end
     end
   end
 
@@ -356,16 +411,6 @@ function M.execute_mutations(buf, mutations)
       end
       table.insert(data.original, item)
       original_by_key[item.key] = item
-    elseif m.type == "UPDATE" then
-      local orig = original_by_key[m.key]
-      if orig then
-        orig.status = m.item.status
-        orig.assignee = m.item.assignee
-        orig.summary = m.item.summary
-        if m.item.previous_labels ~= nil then
-          orig.labels = m.item.labels
-        end
-      end
     elseif m.type == "MOVE" and m.dest == "SPRINT" then
       local orig = original_by_key[m.key]
       if orig then
@@ -375,16 +420,21 @@ function M.execute_mutations(buf, mutations)
   end
 
   local function finish_all(applied, failed_at)
+    saving[buf] = nil
+    release()
     cli.clear_cache("all")
+    local valid = vim.api.nvim_buf_is_valid(buf)
+    if valid then vim.api.nvim_buf_clear_namespace(buf, create_anchors, 0, -1) end
     if not failed_at then
       vim.notify("All changes applied successfully!", vim.log.levels.INFO)
-      if vim.api.nvim_buf_is_valid(buf) then
-        vim.bo[buf].modified = false
+      if not valid or view.cache[buf] ~= data or vim.api.nvim_buf_get_changedtick(buf) ~= saved_tick then
+        return
       end
+      vim.bo[buf].modified = false
       view.refresh(buf, { after_save = true })
       if has_create then
         vim.defer_fn(function()
-          if vim.api.nvim_buf_is_valid(buf) then
+          if vim.api.nvim_buf_is_valid(buf) and not saving[buf] then
             view.refresh(buf, { after_save = true })
           end
         end, 1200)
@@ -486,9 +536,12 @@ function M.execute_mutations(buf, mutations)
         return
       end
       m.created_key = key
-      if item.row ~= nil then
-        view.set_line_key(buf, item.row, key)
-        view.clear_copy_source_at_line(buf, item.row)
+      if m.create_anchor and vim.api.nvim_buf_is_valid(buf) then
+        local pos = vim.api.nvim_buf_get_extmark_by_id(buf, create_anchors, m.create_anchor, { details = true })
+        if #pos > 0 and not pos[3].invalid then
+          view.set_line_key(buf, pos[1], key)
+          view.clear_copy_source_at_line(buf, pos[1])
+        end
       end
 
       local status = item.status or ""
@@ -552,76 +605,81 @@ function M.execute_mutations(buf, mutations)
           if update:match("^status:") or update:match("^Close issue ") then status_changed = true end
         end
 
-        -- Build sequential chain: summary/description -> assignee -> epic -> labels -> status
-        -- Short-circuit on error to avoid inconsistent state
-        local function do_status(skip_on_error)
-          if skip_on_error then
-            finish(false)
-            return
+        local function record(saved, closed)
+          local orig = original_by_key[m.key]
+          if orig then
+            orig.remote = orig.remote or {}
+            for field, value in pairs(saved) do
+              orig.remote[field] = value
+              if m.row_fields and m.row_fields[field] ~= nil then
+                -- Keep the baseline for the text that is still displayed. An
+                -- issue-editor change need not be present on that list row.
+                orig[field] = m.row_fields[field]
+              end
+            end
           end
-          if not status_changed then
-            scratch.complete_list_update(m.key, m.item, m.updates)
-            finish(true)
+          scratch.commit_fields(m.key, saved, {
+            from_list = true, draft_fields = m.draft_fields or {}, draft_buf = m.draft_buf,
+            close = closed, draft_status = m.draft_status,
+          })
+        end
+
+        local function do_status(skip_on_error)
+          if skip_on_error or not status_changed then
+            finish(not skip_on_error)
             return
           end
           cli.exec({ "issue", "move", m.key, m.item.status }, function(_, stderr, code)
             if code ~= 0 then
               vim.notify("Failed to update status " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-              finish(false)
-              return
+            else
+              record({ status = m.item.status }, m.close)
             end
-            scratch.complete_list_update(m.key, m.item, m.updates)
-            finish(true)
+            finish(code == 0)
           end)
         end
 
-        local function do_labels(skip_on_error)
-          if skip_on_error or m.item.previous_labels == nil then
+        local function do_metadata(skip_on_error)
+          if skip_on_error or (m.item.previous_labels == nil and m.item.previous_components == nil) then
             do_status(skip_on_error)
             return
           end
 
-          local orig_labels_set = util.labels_to_set(m.item.previous_labels)
-          local new_labels_list = util.labels_to_list(m.item.labels)
-          local new_labels_set = util.labels_to_set(new_labels_list)
-
           local args = { "issue", "edit", m.key, "--no-input" }
-          for label, _ in pairs(orig_labels_set) do
-            if not new_labels_set[label] then
-              table.insert(args, "--label")
-              table.insert(args, "-" .. label)
-            end
+          local saved = {}
+          if m.item.previous_labels ~= nil then
+            cli.append_list_delta(args, "--label", m.item.previous_labels, m.item.labels)
+            saved.labels = m.item.labels
           end
-          for _, label in ipairs(new_labels_list) do
-            if not orig_labels_set[label] then
-              table.insert(args, "--label")
-              table.insert(args, label)
-            end
+          if m.item.previous_components ~= nil then
+            cli.append_list_delta(args, "--component", m.item.previous_components, m.item.components)
+            saved.components = m.item.components
           end
 
           if #args == 4 then
+            record(saved)
             do_status(false)
             return
           end
 
           cli.exec(args, function(_, stderr, code)
             if code ~= 0 then
-              vim.notify("Failed to update labels " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-              do_status(true)
+              vim.notify("Failed to update labels or components for " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
             else
-              do_status(false)
+              record(saved)
             end
+            do_status(code ~= 0)
           end)
         end
 
         local function do_epic(skip_on_error)
           if skip_on_error or m.item.epic == nil then
-            do_labels(skip_on_error)
+            do_metadata(skip_on_error)
             return
           end
           cli.set_issue_epic(m.key, util.extract_epic_key(m.item.epic), function(ok)
-            if ok then scratch.commit_epic(m.key, m.item.epic) end
-            do_labels(not ok)
+            if ok then record({ epic = m.item.epic }) end
+            do_metadata(not ok)
           end)
         end
 
@@ -643,6 +701,7 @@ function M.execute_mutations(buf, mutations)
                 vim.notify("Failed to update assignee " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
                 do_epic(true)
               else
+                record({ assignee = m.item.assignee })
                 do_epic(false)
               end
             end)
@@ -672,13 +731,14 @@ function M.execute_mutations(buf, mutations)
 
         if summary_changed or description_changed or #custom_updates > 0 then
           local args = { "issue", "edit", m.key, "--no-input" }
+          local saved = {}
           if summary_changed then
-            table.insert(args, "-s")
-            table.insert(args, m.item.summary)
+            vim.list_extend(args, { "-s", m.item.summary })
+            saved.summary = m.item.summary
           end
           if description_changed then
-            table.insert(args, "--body")
-            table.insert(args, m.item.description or "")
+            vim.list_extend(args, { "--body", m.item.description })
+            saved.description = m.item.description
           end
           custom.append_args(args, custom_updates, false)
           cli.exec(args, function(_, stderr, code)
@@ -686,7 +746,8 @@ function M.execute_mutations(buf, mutations)
               vim.notify("Failed to update issue " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
               do_assign(true)
             else
-              scratch.commit_custom_fields(m.key, custom_updates)
+              if next(saved) then record(saved) end
+              if #custom_updates > 0 then scratch.commit_custom_fields(m.key, custom_updates) end
               do_assign(false)
             end
           end)

@@ -39,19 +39,23 @@ local function preview_list_save(list)
   return field(0, 1)
 end
 
-local function confirm_list_save(jira, list, message)
-  local start = #jira.messages
-  press("Y")
+local function wait_for_notice(jira, start, message)
   t.ok(vim.wait(500, function()
     for i = start + 1, #jira.messages do
-      if jira.messages[i]:find(message or "All changes applied successfully!", 1, true) then return true end
+      if jira.messages[i]:find(message, 1, true) then return true end
     end
     return false
   end), "save did not finish")
+end
+
+local function confirm_list_save(jira, list, message)
+  local start = #jira.messages
+  press("Y")
+  wait_for_notice(jira, start, message or "All changes applied successfully!")
   t.eq(vim.api.nvim_get_current_buf(), list)
 end
 
-local function with_issue(test, epic)
+local function with_issue(test, epic, opts)
   local options, drafts = config.options, scratch.drafts
   local previous = vim.api.nvim_get_current_buf()
   local buffers = vim.api.nvim_list_bufs()
@@ -62,9 +66,11 @@ local function with_issue(test, epic)
       fields = {
         summary = "An issue",
         status = { name = "Open" },
-        assignee = { displayName = "A User" },
+        assignee = { displayName = "Alexandra Example-Tester", name = "atester" },
         issuetype = { name = "Task" },
         labels = { "certificates", "k8s", "prod" },
+        components = { { name = "Original Component" } },
+        description = "Original description",
         parent = epic and { key = epic } or nil,
       },
     },
@@ -72,7 +78,8 @@ local function with_issue(test, epic)
     messages = {},
   }
   scratch.drafts = {}
-  jira_oil.setup({ defaults = { project = "EPIC" }, cli = { cache = { enabled = false } } })
+  jira_oil.setup(vim.tbl_deep_extend("force",
+    { defaults = { project = "EPIC" }, cli = { cache = { enabled = false } } }, opts or {}))
   local ok, err = pcall(function()
     h.stub(vim, "system", function(args, _, on_exit)
       local stdout, stderr, code = "", "", 0
@@ -82,12 +89,18 @@ local function with_issue(test, epic)
         if vim.list_contains(args, "--type") then
           stdout = "key,summary,status\nEPIC-2,New epic,Open\n"
         else
-          stdout = 'key,assignee,status,summary,labels\nEPIC-1,A User,Open,An issue,"certificates, k8s, prod"\n'
+          stdout = ('key,assignee,status,summary,labels\nEPIC-1,%s,%s,An issue,"certificates, k8s, prod"\n')
+            :format(jira.issue.fields.assignee.displayName, jira.issue.fields.status.name)
         end
       else
         table.insert(jira.writes, vim.list_slice(args, 2))
+        if args[2] == "epic" and jira.before_epic_reply then jira.before_epic_reply() end
         if args[3] == "move" and jira.fail_move then
           stderr, code = "transition failed", 1
+        elseif args[3] == "move" then
+          jira.issue.fields.status.name = args[5]
+        elseif args[2] == "epic" and args[3] == "add" and jira.fail_epic then
+          stderr, code = "epic update failed", 1
         end
       end
       on_exit({ stdout = stdout, stderr = stderr, code = code })
@@ -126,19 +139,36 @@ t.test("epic: list save previews and applies only the selected epic", function()
     t.eq(preview_list_save(list), "[UPDATE] EPIC-1: epic: (none) -> EPIC-2")
     confirm_list_save(jira, list)
     t.eq(jira.writes, { { "epic", "add", "EPIC-2", "EPIC-1" } })
+    t.eq(vim.bo[issue].modified, false)
   end)
 end)
 
-t.test("epic: reopening the editor restores the epic draft and fetches untouched labels", function()
+t.test("epic: reopening the editor uses current Jira values for untouched fields", function()
   with_issue(function(jira, list, issue)
     pick_epic(issue)
     vim.api.nvim_set_current_buf(list)
     vim.api.nvim_buf_delete(issue, { force = true })
     jira.issue.fields.labels = { "new-server-label" }
+    jira.issue.fields.description = "New description in Jira"
     local reopened = open_issue()
     t.eq({ field(reopened, 1), field(reopened, 4) }, { "EPIC-2: New epic", "new-server-label" })
+    t.eq(field(reopened, 10), "New description in Jira")
     t.eq(preview_list_save(list), "[UPDATE] EPIC-1: epic: (none) -> EPIC-2")
   end)
+end)
+
+t.test("epic: list column widths cannot become changes to assignee or labels", function()
+  with_issue(function(jira, list, issue)
+    t.eq(field(issue, 6), jira.issue.fields.assignee.displayName)
+    t.eq(field(issue, 4), "certificates, k8s, prod")
+    pick_epic(issue)
+    t.eq(preview_list_save(list), "[UPDATE] EPIC-1: epic: (none) -> EPIC-2")
+    confirm_list_save(jira, list)
+    t.eq(jira.writes, { { "epic", "add", "EPIC-2", "EPIC-1" } })
+  end, nil, { view = { columns = {
+    { name = "status", width = 15 }, { name = "assignee", width = 15 },
+    { name = "summary" }, { name = "labels", width = 20 },
+  } } })
 end)
 
 t.test("epic: saving a draft with real label edits removes and adds only the edited labels", function()
@@ -181,4 +211,77 @@ t.test("epic: clearing the field removes the epic from the list save", function(
     confirm_list_save(jira, list)
     t.eq(jira.writes, { { "epic", "remove", "EPIC-1" } })
   end, "EPIC-3")
+end)
+
+t.test("epic: list save applies component changes from a closed issue editor", function()
+  with_issue(function(jira, list, issue)
+    pick_epic(issue)
+    edit_field(issue, 3, "New Component")
+    press("<C-q>")
+    t.eq(preview_list_save(list),
+      "[UPDATE] EPIC-1: epic: (none) -> EPIC-2, components: Original Component -> New Component")
+    confirm_list_save(jira, list)
+    t.eq(jira.writes, {
+      { "epic", "add", "EPIC-2", "EPIC-1" },
+      { "issue", "edit", "EPIC-1", "--no-input", "--component", "-Original Component", "--component", "New Component" },
+    })
+  end)
+end)
+
+t.test("epic: retrying an issue-editor save skips the committed status transition", function()
+  with_issue(function(jira, _, issue)
+    pick_epic(issue)
+    edit_field(issue, 5, "In Progress")
+    jira.fail_epic = true
+    vim.cmd.write()
+    wait_for_notice(jira, 0, "Some updates failed")
+    jira.fail_epic = false
+    local start = #jira.messages
+    vim.cmd.write()
+    wait_for_notice(jira, start, "updated successfully")
+    t.eq(jira.writes, {
+      { "issue", "move", "EPIC-1", "In Progress" },
+      { "epic", "add", "EPIC-2", "EPIC-1" },
+      { "epic", "add", "EPIC-2", "EPIC-1" },
+    })
+  end)
+end)
+
+t.test("epic: existing issue type changes are rejected before either save writes", function()
+  with_issue(function(jira, list, issue)
+    pick_epic(issue)
+    edit_field(issue, 2, "Bug")
+    vim.cmd.write()
+    wait_for_notice(jira, 0, "Change the issue type for EPIC-1 in Jira")
+    t.ok(vim.bo[issue].modified)
+    local start = #jira.messages
+    vim.api.nvim_set_current_buf(list)
+    vim.cmd.write()
+    wait_for_notice(jira, start, "Change the issue type for EPIC-1 in Jira")
+    t.eq(jira.writes, {})
+  end)
+end)
+
+t.test("epic: list reset discards drafts in hidden issue editors", function()
+  with_issue(function(_, list, issue)
+    pick_epic(issue)
+    vim.api.nvim_set_current_buf(list)
+    h.stub(vim.fn, "confirm", function() return 2 end, function() press("gR") end)
+    t.eq(open_issue(), issue)
+    t.eq(field(issue, 1), "")
+    t.eq(vim.bo[issue].modified, false)
+    vim.api.nvim_set_current_buf(list)
+    vim.cmd.write()
+    t.eq(vim.api.nvim_get_current_buf(), list)
+  end)
+end)
+
+t.test("epic: reverting the editor field during a list save keeps the newer choice", function()
+  with_issue(function(jira, list, issue)
+    pick_epic(issue)
+    t.eq(preview_list_save(list), "[UPDATE] EPIC-1: epic: (none) -> EPIC-2")
+    jira.before_epic_reply = function() edit_field(issue, 1, "") end
+    confirm_list_save(jira, list)
+    t.eq(preview_list_save(list), "[UPDATE] EPIC-1: epic: EPIC-2 -> (none)")
+  end)
 end)

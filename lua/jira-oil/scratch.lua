@@ -12,6 +12,21 @@ M.pending_existing = {}
 M.drafts = {}
 M.ns = vim.api.nvim_create_namespace("JiraOilIssue")
 M.ns_anchor = vim.api.nvim_create_namespace("JiraOilIssueAnchor")
+local saving_issues = {}
+
+---Reserve existing issues until the list or editor finishes writing them.
+function M.reserve_updates(keys)
+  for _, key in ipairs(keys) do
+    if saving_issues[key] then
+      vim.notify("A Jira save is already in progress for " .. key .. ".", vim.log.levels.WARN)
+      return nil
+    end
+  end
+  for _, key in ipairs(keys) do saving_issues[key] = true end
+  return function()
+    for _, key in ipairs(keys) do saving_issues[key] = nil end
+  end
+end
 
 ---@param key string
 ---@return boolean
@@ -162,49 +177,22 @@ local function apply_parsed_overrides(issue, draft)
   local parsed, diff = draft.parsed, draft.diff
   issue.fields = issue.fields or {}
 
-  if parsed.summary and parsed.summary ~= "" then
-    issue.fields.summary = parsed.summary
-  end
-
-  if parsed.fields then
-    local status = parsed.fields.status or ""
-    if status ~= "" then
-      issue.fields.status = { name = status }
-    end
-
-    local assignee = parsed.fields.assignee or ""
-    if assignee ~= "" then
-      if assignee == "Unassigned" then
-        issue.fields.assignee = nil
-      else
-        issue.fields.assignee = { displayName = assignee }
-      end
-    end
-
-    local itype = parsed.fields.type or ""
-    if itype ~= "" then
-      issue.fields.issuetype = { name = itype }
-      issue.fields.issueType = issue.fields.issuetype
-    end
-
-    local comps = parsed.fields.components or ""
-    if comps ~= "" then
-      local list = {}
-      for comp in string.gmatch(comps, "[^,]+") do
-        comp = vim.trim(comp)
-        if comp ~= "" then
-          table.insert(list, { name = comp })
-        end
-      end
-      issue.fields.components = list
-    end
-
-    if diff.labels_changed then
-      issue.fields.labels = util.labels_to_list(parsed.fields.labels)
+  local fields = parsed.fields or {}
+  apply_row_overrides(issue, {
+    summary = diff.summary_changed and parsed.summary or nil,
+    status = diff.status_changed and fields.status or nil,
+    assignee = diff.assignee_changed and fields.assignee or nil,
+    type = diff.type_changed and fields.type or nil,
+    labels = diff.labels_changed and fields.labels or nil,
+  })
+  if diff.summary_changed then issue.fields.summary = parsed.summary end
+  if diff.description_changed then issue.fields.description = parsed.description end
+  if diff.components_changed then
+    issue.fields.components = {}
+    for _, name in ipairs(util.labels_to_list(fields.components)) do
+      table.insert(issue.fields.components, { name = name })
     end
   end
-
-  issue.fields.description = parsed.description or ""
 end
 
 local function define_highlights()
@@ -324,6 +312,14 @@ local function normalize_description(text)
   return util.trim(table.concat(lines, "\n"))
 end
 
+local function components_text(fields)
+  local names = {}
+  for _, component in ipairs(type(fields.components) == "table" and fields.components or {}) do
+    if type(component) == "table" and component.name then table.insert(names, component.name) end
+  end
+  return util.labels_to_string(names)
+end
+
 ---@param desc any string or ADF document
 ---@return string[]
 local function description_lines(desc)
@@ -350,16 +346,7 @@ local function render_issue(buf, key, issue, is_new, opts)
   local original_epic = opts.original_epic or util.resolve_epic_from_fields(original.fields)
   local epic = parsed and draft.diff.epic_changed and parsed.fields.epic or original_epic
 
-  local components = ""
-  if issue.fields and issue.fields.components and type(issue.fields.components) == "table" then
-    local names = {}
-    for _, comp in ipairs(issue.fields.components) do
-      if comp and comp.name and comp.name ~= "" then
-        table.insert(names, comp.name)
-      end
-    end
-    components = table.concat(names, ", ")
-  end
+  local components = components_text(issue.fields or {})
 
   local labels = util.labels_to_string(issue.fields and issue.fields.labels or "")
 
@@ -769,27 +756,20 @@ local function compute_issue_diff(data, parsed)
   changes.orig_epic_key = orig_epic_key
 
   -- Components
-  local orig_components = {}
-  if orig.fields and orig.fields.components and type(orig.fields.components) == "table" then
-    for _, comp in ipairs(orig.fields.components) do
-      if comp and comp.name and comp.name ~= "" then
-        table.insert(orig_components, comp.name)
-      end
-    end
-  end
-  local orig_components_str = table.concat(orig_components, ", ")
-  local new_components_str = parsed.fields.components or ""
+  local orig_components_str = components_text(orig.fields or {})
+  local new_components_str = util.labels_to_string(parsed.fields.components)
   changes.components_changed = new_components_str ~= orig_components_str
+  changes.orig_components = orig_components_str
   changes.new_components = new_components_str
 
   -- Type
-  local orig_type = ""
+  local orig_type = config.options.defaults.issue_type
   if orig.fields then
     local itype = orig.fields.issuetype or orig.fields.issueType
     if itype then orig_type = itype.name or "" end
   end
   local new_type = parsed.fields.type or ""
-  changes.type_changed = new_type ~= "" and new_type ~= orig_type
+  changes.type_changed = new_type ~= orig_type
   changes.new_type = new_type
 
   -- Labels
@@ -895,6 +875,7 @@ function M.capture_draft(buf)
 
   if has_any_changes(diff) or diff.queued_for_removal then
     M.drafts[data.key] = {
+      buf = buf,
       parsed = parsed,
       diff = diff,
     }
@@ -903,6 +884,12 @@ function M.capture_draft(buf)
   end
   refresh_winbar_for_key(data.key)
   refresh_list_draft_markers(data.key)
+  return diff
+end
+
+local function reconcile_draft(buf)
+  local diff = M.capture_draft(buf)
+  if diff then vim.bo[buf].modified = has_any_changes(diff) end
 end
 
 ---Record custom fields that reached Jira, retaining any newer edits for retry.
@@ -928,62 +915,94 @@ function M.commit_custom_fields(key, updates)
       custom.apply(data.original.fields, updates)
       data.original_custom_fields = data.original_custom_fields or {}
       for _, update in ipairs(updates) do data.original_custom_fields[update.field.id] = update.value end
-      if vim.api.nvim_buf_is_valid(buf) then M.capture_draft(buf) end
+      if vim.api.nvim_buf_is_loaded(buf) then reconcile_draft(buf) end
     end
   end
 end
 
----Record the epic that reached Jira, retaining any newer selection.
-function M.commit_epic(key, epic)
+---Advance only the fields Jira accepted, including when the editor is closed.
+function M.commit_fields(key, saved, opts)
+  opts = opts or {}
   local draft = M.drafts[key]
-  if draft and draft.diff.epic_changed then
-    draft.diff.orig_epic_key = extract_epic_key(epic)
-    draft.diff.epic_changed = draft.diff.new_epic_key ~= draft.diff.orig_epic_key
-    if not has_any_changes(draft.diff) and not draft.diff.queued_for_removal then
-      M.clear_draft(key)
+  if draft then
+    local diff = draft.diff
+    if opts.close then
+      diff.queued_for_removal = nil
+      if diff.new_status == opts.draft_status then diff.status_changed = false end
     end
-  end
-  for buf, data in pairs(M.cache) do
-    if data.key == key and not data.is_new and vim.api.nvim_buf_is_valid(buf) then
-      data.original_epic = epic
-      M.capture_draft(buf)
-    end
-  end
-end
-
----Finish a list update while keeping newer edits to the epic or custom fields.
-function M.complete_list_update(key, item, updates)
-  local tracked = false
-  for buf, data in pairs(M.cache) do
-    if data.key == key and #(data.custom_field_defs or {}) > 0 and vim.api.nvim_buf_is_valid(buf) then
-      tracked = true
-      local fields = data.original.fields
-      fields.summary = item.summary
-      fields.status = { name = item.status }
-      fields.assignee = item.assignee ~= "Unassigned" and { displayName = item.assignee } or nil
-      if item.previous_labels ~= nil then
-        fields.labels = util.labels_to_list(item.labels)
-      end
-      for _, update in ipairs(updates) do
-        if update:match("^description:") then
-          fields.description = item.description
-          data.original_description = normalize_description(item.description)
+    for field, value in pairs(saved) do
+      local changed = field .. "_changed"
+      if diff[changed] then
+        if field == "epic" then
+          diff.orig_epic_key = extract_epic_key(value)
+          diff[changed] = diff.new_epic_key ~= diff.orig_epic_key
+        elseif field == "description" then
+          diff[changed] = normalize_description(diff.new_description) ~= normalize_description(value)
+        else
+          diff[changed] = diff["new_" .. field] ~= value
+          if field == "labels" or field == "components" then diff["orig_" .. field] = value end
         end
       end
-      M.capture_draft(buf)
     end
-  end
-  if not tracked then
-    local draft = M.drafts[key]
-    if not draft or (not draft.diff.epic_changed
-        and #(draft.diff.custom_field_updates or {}) == 0 and #(draft.diff.custom_field_errors or {}) == 0) then
+    if not has_any_changes(diff) and not diff.queued_for_removal then
       M.clear_draft(key)
     end
+  end
+  for buf, data in pairs(M.cache) do
+    if data.key == key and not data.is_new and vim.api.nvim_buf_is_loaded(buf) then
+      local diff = opts.from_list and compute_issue_diff(data, M.parse_buffer(buf))
+      local fields = data.original.fields
+      for field, value in pairs(saved) do
+        if field == "epic" then
+          data.original_epic = value
+        elseif field == "description" then
+          fields.description = value
+          data.original_description = normalize_description(value)
+        elseif field == "assignee" then
+          fields.assignee = value ~= "Unassigned" and { displayName = value } or nil
+        elseif field == "status" then
+          fields.status = { name = value }
+        elseif field == "labels" then
+          fields.labels = util.labels_to_list(value)
+        elseif field == "components" then
+          fields.components = {}
+          for _, name in ipairs(util.labels_to_list(value)) do
+            table.insert(fields.components, { name = name })
+          end
+        else
+          fields[field] = value
+        end
+        -- List edits can change a field whose issue editor still shows the old
+        -- value. Refresh that field while keeping any newer text typed there.
+        local confirmed_close = diff and opts.close and field == "status" and diff.new_status == opts.draft_status
+        local submitted_from_here = opts.draft_buf == buf and opts.draft_fields[field]
+        if diff and (confirmed_close or not (diff[field .. "_changed"] or submitted_from_here)) then
+          if field == "description" then
+            local row = get_field_row(buf, "Description")
+            if row then
+              vim.api.nvim_buf_set_lines(buf, row - 1, -1, false, description_lines(value))
+            end
+          else
+            update_field(buf, field, value)
+          end
+        end
+      end
+      reconcile_draft(buf)
+    end
+  end
+end
+
+function M.edit_error(key, type_changed, description)
+  if type_changed then
+    return "Change the issue type for " .. key .. " in Jira, then refresh its editor. jira-cli supports type selection on creation."
+  end
+  if description ~= nil and normalize_description(description) == "" then
+    return "Clear the description for " .. key .. " in Jira, then refresh its editor."
   end
 end
 
 ---Execute a sequence of async steps, calling done_cb when all complete
----@param steps table[] Array of { fn = function(next_cb), desc = string }
+---@param steps table[] Array of { fn = function(next_cb) }
 ---@param done_cb function(has_errors: boolean)
 local function exec_steps(steps, done_cb)
   local idx = 0
@@ -1008,6 +1027,10 @@ end
 function M.save(buf)
   local data = M.cache[buf]
   if not data then return end
+  if data.saving then
+    vim.notify("A Jira save is already in progress for this issue.", vim.log.levels.WARN)
+    return
+  end
   if data.create_without_key then
     vim.notify("This issue was created but its key could not be read. Find its key in Jira and reopen it before saving again.", vim.log.levels.ERROR)
     return
@@ -1026,6 +1049,14 @@ function M.save(buf)
   if parsed.summary == "" then
     vim.notify("Summary cannot be empty.", vim.log.levels.ERROR)
     return
+  end
+
+  if not data.is_new then
+    local err = M.edit_error(data.key, diff.type_changed, diff.description_changed and diff.new_description or nil)
+    if err then
+      vim.notify(err, vim.log.levels.ERROR)
+      return
+    end
   end
 
   if data.is_new then
@@ -1079,14 +1110,17 @@ function M.save(buf)
     end
 
     custom.append_args(args, diff.custom_field_updates, true)
+    data.saving = true
     cli.exec(args, function(stdout, stderr, code)
       if code ~= 0 then
+        data.saving = nil
         vim.notify("Failed to create issue: " .. (stderr or ""), vim.log.levels.ERROR)
         if vim.api.nvim_buf_is_valid(buf) then vim.bo[buf].modified = true end
         return
       end
       local created_key = util.extract_issue_key((stdout or "") .. "\n" .. (stderr or ""))
       if not created_key then
+        data.saving = nil
         data.create_without_key = true
         cli.clear_cache("all")
         vim.notify("Issue created but its key could not be read. Find its key in Jira and reopen it before saving again.", vim.log.levels.ERROR)
@@ -1118,6 +1152,7 @@ function M.save(buf)
       if parsed.fields.project and parsed.fields.project ~= "" then fields.project = { key = parsed.fields.project } end
       if vim.api.nvim_buf_is_valid(buf) then vim.api.nvim_buf_set_name(buf, "jira-oil://issue/" .. created_key) end
       local function complete(failed)
+        data.saving = nil
         cli.clear_cache("all")
         if not failed then vim.notify("Issue created successfully: " .. created_key, vim.log.levels.INFO) end
         if vim.api.nvim_buf_is_valid(buf) then
@@ -1141,266 +1176,87 @@ function M.save(buf)
       end
     end)
   else
-    -- Compute diff against original -- only mutate what actually changed
-    local steps = {}
-
-    -- Step 1: Edit fields before any transition requiring them.
-    if diff.summary_changed or diff.description_changed or #diff.custom_field_updates > 0 then
-      table.insert(steps, {
-        desc = "update issue fields",
-        fn = function(next_cb)
-          local args = { "issue", "edit", data.key, "--no-input" }
-          if diff.summary_changed then
-            table.insert(args, "-s")
-            table.insert(args, diff.new_summary)
-          end
-          if diff.description_changed then
-            table.insert(args, "--body")
-            table.insert(args, diff.new_description)
-          end
-          custom.append_args(args, diff.custom_field_updates, false)
-          cli.exec(args, function(_, stderr, code)
-            if code ~= 0 then
-              vim.notify("Failed to update " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-              next_cb(true)
-            else
-              M.commit_custom_fields(data.key, diff.custom_field_updates)
-              next_cb(false)
-            end
-          end)
-        end,
-      })
-    end
-
-    -- Step 2: Assign (only if changed)
-    if diff.assignee_changed then
-      table.insert(steps, {
-        desc = "update assignee",
-        fn = function(next_cb)
-          local function assign_with_value(assignee)
-            -- Pass --project so that /user/assignable/search includes project=<KEY>,
-            -- which Jira Cloud requires (without it the API returns 400).
-            local project = util.issue_project_from_key(data.key) or ""
-            local cmd = { "issue", "assign", data.key, assignee }
-            if project ~= "" then
-              table.insert(cmd, "--project")
-              table.insert(cmd, project)
-            end
-            cli.exec(cmd, function(_, stderr, code)
-              if code ~= 0 then
-                vim.notify("Failed to update assignee for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-                next_cb(true)
-              else
-                next_cb(false)
-              end
-            end)
-          end
-
-          local assignee_input = diff.new_assignee
-          if assignee_input == "Unassigned" then
-            assign_with_value("x")
-            return
-          end
-
-          -- Fast path for login/account token or explicit mapping notation.
-          local resolved = util.resolve_assignee_for_cli(assignee_input, nil)
-          if resolved and resolved ~= "" then
-            assign_with_value(resolved)
-            return
-          end
-
-          -- Fallback: resolve from current cached source assignee; if that
-          -- still fails, pass through the raw input for jira-cli resolution.
-          local source_assignee = data.original and data.original.fields and data.original.fields.assignee or nil
-          local resolved_from_source = util.resolve_assignee_for_cli(assignee_input, source_assignee)
-          assign_with_value((resolved_from_source and resolved_from_source ~= "") and resolved_from_source or assignee_input)
-        end,
-      })
-    end
-
-    -- Step 3: Move status (only if changed)
-    if diff.status_changed then
-      table.insert(steps, {
-        desc = "update status",
-        fn = function(next_cb)
-          cli.exec({ "issue", "move", data.key, diff.new_status }, function(_, stderr, code)
-            if code ~= 0 then
-              vim.notify("Failed to update status for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-              next_cb(true)
-            else
-              next_cb(false)
-            end
-          end)
-        end,
-      })
-    end
-
-    -- Step 4: Epic change (only if changed)
-    if diff.epic_changed then
-      table.insert(steps, {
-        desc = "update epic",
-        fn = function(next_cb)
-          cli.set_issue_epic(data.key, diff.new_epic_key, function(ok)
-            if ok then M.commit_epic(data.key, parsed.fields.epic) end
-            next_cb(not ok)
-          end)
-        end,
-      })
-    end
-
-    -- Step 5: Components change (only if changed)
-    if diff.components_changed then
-      table.insert(steps, {
-        desc = "update components",
-        fn = function(next_cb)
-          -- jira issue edit supports --component/-C to set components
-          local args = { "issue", "edit", data.key, "--no-input" }
-          if diff.new_components == "" then
-            -- Clear components by passing empty component flag
-            table.insert(args, "--component")
-            table.insert(args, "")
+    local key, steps = data.key, {}
+    local function add_step(args, saved, field, custom_updates)
+      table.insert(steps, { fn = function(next_cb)
+        cli.exec(args, function(_, stderr, code)
+          if code == 0 then
+            if next(saved) then M.commit_fields(key, saved) end
+            if custom_updates and #custom_updates > 0 then M.commit_custom_fields(key, custom_updates) end
           else
-            for comp in string.gmatch(diff.new_components, "[^,]+") do
-              comp = vim.trim(comp)
-              if comp ~= "" then
-                table.insert(args, "--component")
-                table.insert(args, comp)
-              end
-            end
+            vim.notify("Failed to update " .. field .. " for " .. key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
           end
-          cli.exec(args, function(_, stderr, code)
-            if code ~= 0 then
-              vim.notify("Failed to update components for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-              next_cb(true)
-            else
-              next_cb(false)
-            end
-          end)
-        end,
-      })
+          next_cb(code ~= 0)
+        end)
+      end })
     end
 
-    -- Step 6: Type change (only if changed)
-    if diff.type_changed then
-      table.insert(steps, {
-        desc = "update type",
-        fn = function(next_cb)
-          -- jira issue edit supports --type/-t to change issue type
-          cli.exec({ "issue", "edit", data.key, "--no-input", "-t", diff.new_type }, function(_, stderr, code)
-            if code ~= 0 then
-              vim.notify("Failed to update type for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-              next_cb(true)
-            else
-              next_cb(false)
-            end
-          end)
-        end,
-      })
+    if diff.summary_changed or diff.description_changed or #diff.custom_field_updates > 0 then
+      local args = { "issue", "edit", key, "--no-input" }
+      local saved = {}
+      if diff.summary_changed then
+        vim.list_extend(args, { "-s", diff.new_summary })
+        saved.summary = diff.new_summary
+      end
+      if diff.description_changed then
+        vim.list_extend(args, { "--body", diff.new_description })
+        saved.description = diff.new_description
+      end
+      custom.append_args(args, diff.custom_field_updates, false)
+      add_step(args, saved, "issue fields", diff.custom_field_updates)
     end
-
-    -- Step 7: Labels change (only if changed)
-    if diff.labels_changed then
-      table.insert(steps, {
-        desc = "update labels",
-        fn = function(next_cb)
-          local args = { "issue", "edit", data.key, "--no-input" }
-          local orig_labels_set = util.labels_to_set(data.original and data.original.fields and data.original.fields.labels or nil)
-          local new_labels_list = util.labels_to_list(diff.new_labels)
-          local new_labels_set = util.labels_to_set(new_labels_list)
-
-          for label, _ in pairs(orig_labels_set) do
-            if not new_labels_set[label] then
-              table.insert(args, "--label")
-              table.insert(args, "-" .. label)
-            end
-          end
-
-          for _, label in ipairs(new_labels_list) do
-            if not orig_labels_set[label] then
-              table.insert(args, "--label")
-              table.insert(args, label)
-            end
-          end
-
-          if #args == 4 then
-            next_cb(false)
-            return
-          end
-
-          cli.exec(args, function(_, stderr, code)
-            if code ~= 0 then
-              vim.notify("Failed to update labels for " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-              next_cb(true)
-            else
-              next_cb(false)
-            end
-          end)
-        end,
-      })
+    if diff.assignee_changed then
+      local input = diff.new_assignee
+      local assignee = input == "Unassigned" and "x"
+        or util.resolve_assignee_for_cli(input, nil)
+        or util.resolve_assignee_for_cli(input, data.original.fields.assignee)
+        or input
+      local args = { "issue", "assign", key, assignee }
+      local project = util.issue_project_from_key(key)
+      if project then vim.list_extend(args, { "--project", project }) end
+      add_step(args, { assignee = input }, "assignee")
+    end
+    if diff.status_changed then
+      add_step({ "issue", "move", key, diff.new_status }, { status = diff.new_status }, "status")
+    end
+    if diff.epic_changed then
+      table.insert(steps, { fn = function(next_cb)
+        cli.set_issue_epic(key, diff.new_epic_key, function(ok)
+          if ok then M.commit_fields(key, { epic = parsed.fields.epic }) end
+          next_cb(not ok)
+        end)
+      end })
+    end
+    for _, field in ipairs({ "components", "labels" }) do
+      if diff[field .. "_changed"] then
+        local flag = field == "components" and "--component" or "--label"
+        local desired = diff["new_" .. field]
+        local args = { "issue", "edit", key, "--no-input" }
+        cli.append_list_delta(args, flag, diff["orig_" .. field], desired)
+        if #args > 4 then add_step(args, { [field] = desired }, field) end
+      end
     end
 
     if #steps == 0 then
       vim.notify("No changes to apply.", vim.log.levels.INFO)
-      M.clear_draft(data.key)
-      if vim.api.nvim_buf_is_valid(buf) then
-        vim.bo[buf].modified = false
-      end
+      vim.bo[buf].modified = false
       return
     end
 
+    local release = M.reserve_updates({ key })
+    if not release then return end
+    data.saving = true
     exec_steps(steps, function(has_errors)
+      data.saving = nil
+      release()
+      cli.clear_cache("all")
       if has_errors then
-        vim.notify("Some updates failed for " .. data.key .. ". Check messages above.", vim.log.levels.WARN)
+        vim.notify("Some updates failed for " .. key .. ". Check messages above.", vim.log.levels.WARN)
       else
-        -- Update cached original to reflect saved state so re-saving
-        -- without changes correctly reports "no changes to apply"
-        local orig = data.original
-        if not orig.fields then orig.fields = {} end
-        if diff.summary_changed then
-          orig.fields.summary = diff.new_summary
-        end
-        if diff.description_changed then
-          orig.fields.description = diff.new_description
-          data.original_description = normalize_description(diff.new_description)
-        end
-        if diff.assignee_changed then
-          if diff.new_assignee == "Unassigned" then
-            orig.fields.assignee = nil
-          else
-            orig.fields.assignee = { displayName = diff.new_assignee }
-          end
-        end
-        if diff.status_changed then
-          orig.fields.status = { name = diff.new_status }
-        end
-        if diff.components_changed then
-          local comps = {}
-          for comp in string.gmatch(diff.new_components, "[^,]+") do
-            comp = vim.trim(comp)
-            if comp ~= "" then
-              table.insert(comps, { name = comp })
-            end
-          end
-          orig.fields.components = comps
-        end
-        if diff.type_changed then
-          local itype = orig.fields.issuetype or orig.fields.issueType
-          if itype then
-            itype.name = diff.new_type
-          else
-            orig.fields.issuetype = { name = diff.new_type }
-          end
-        end
-        if diff.labels_changed then
-          orig.fields.labels = util.labels_to_list(diff.new_labels)
-        end
-        vim.notify("Issue " .. data.key .. " updated successfully!", vim.log.levels.INFO)
-        cli.clear_cache("all")
-        M.clear_draft(data.key)
+        vim.notify("Issue " .. key .. " updated successfully!", vim.log.levels.INFO)
       end
-      if vim.api.nvim_buf_is_valid(buf) then
-        M.capture_draft(buf)
-        vim.bo[buf].modified = has_errors or not vim.deep_equal(saved_lines, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+      if vim.api.nvim_buf_is_loaded(buf) and M.cache[buf] == data then
+        reconcile_draft(buf)
       end
     end)
   end
@@ -1409,6 +1265,10 @@ end
 function M.reset(buf)
   local data = M.cache[buf]
   if not data then return end
+  if data.saving then
+    vim.notify("Wait for the Jira save to finish before resetting the issue editor.", vim.log.levels.WARN)
+    return
+  end
   if not data.is_new and data.key and data.key ~= "" then
     M.clear_draft(data.key)
   end
@@ -1418,6 +1278,16 @@ function M.reset(buf)
     return
   end
   render_issue(buf, data.key, issue, data.is_new, { original_epic = data.original_epic })
+end
+
+function M.discard_draft(key)
+  local had_draft = M.has_draft(key)
+  M.clear_draft(key)
+  for buf, data in pairs(M.cache) do
+    if data.key == key and not data.is_new and vim.api.nvim_buf_is_loaded(buf) and (had_draft or vim.bo[buf].modified) then
+      M.reset(buf)
+    end
+  end
 end
 
 function M.pick_epic(buf)

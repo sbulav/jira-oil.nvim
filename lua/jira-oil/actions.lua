@@ -124,7 +124,7 @@ M.select = {
     if key and key ~= "" then
       local line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] or ""
       local parsed = parser.parse_line(line)
-      scratch.open_existing(key, parsed)
+      scratch.open_existing(key, parsed and view.row_edits(buf, key, parsed))
       return
     end
 

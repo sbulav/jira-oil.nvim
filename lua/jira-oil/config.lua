@@ -27,13 +27,6 @@ local default_config = {
       order_by = "created",
       prefill_search = "",
     },
-    epic_issues = {
-      args = { "issue", "list" },
-      columns = { "type", "key", "assignee", "status", "summary", "labels" },
-      filters = { "-s~done", "-s~closed" },
-      order_by = "status",
-      prefill_search = "",
-    },
   },
   view = {
     -- Editable columns rendered as inline buffer text.  The issue key is
@@ -45,7 +38,6 @@ local default_config = {
     },
     -- Display width reserved for the virtual-text key column (characters)
     key_width = 12,
-    default_sort = "key",
     column_highlights = {
       key = "JiraOilKey",
       status = "JiraOilStatus",

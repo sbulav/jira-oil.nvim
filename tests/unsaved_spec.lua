@@ -381,6 +381,19 @@ t.test("unsaved: a deletion-only save restores rows without a discard prompt", f
   end)
 end)
 
+t.test("unsaved: an automatic refresh preserves edits made while it is fetching", function()
+  with_list(function(buf)
+    local pending
+    h.stub(cli, "get_filtered_issues", function(_, _, cb) pending = cb end, function()
+      view.refresh(buf, { after_save = true })
+      edit(buf)
+      pending({})
+    end)
+    t.ok(vim.bo[buf].modified)
+    t.ok(vim.api.nvim_buf_get_lines(buf, 1, 2, false)[1]:find("Pending", 1, true))
+  end)
+end)
+
 t.test("unsaved: closing an issue buffer still captures its draft without prompting", function()
   with_list(function(_, _, confirmations)
     local buf = vim.api.nvim_create_buf(true, false)

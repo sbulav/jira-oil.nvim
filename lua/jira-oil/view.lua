@@ -530,6 +530,21 @@ function M.get_spec(buf)
   return data and data.spec or nil
 end
 
+---Return fields actually edited in a list row. The default row can contain
+---truncated or stale display values, so it is not an issue editor baseline.
+function M.row_edits(buf, key, parsed)
+  local data = M.cache[buf]
+  for _, original in ipairs(data and data.original or {}) do
+    if original.key == key then
+      local edits = {}
+      for _, name in ipairs({ "status", "assignee", "summary", "type", "labels" }) do
+        if parsed[name] ~= original[name] then edits[name] = parsed[name] end
+      end
+      return edits
+    end
+  end
+end
+
 ---@param issue_keys (string|nil)[]
 ---@return table<string, number[]>
 local function build_rows_by_key(issue_keys)
@@ -549,17 +564,19 @@ end
 ---@param item table
 ---@return string
 local function format_structured_item(item)
+  local remote = item.remote or {}
   local issue = {
     key = item.key,
     fields = {
-      status = { name = item.status or "" },
-      summary = item.summary or "",
+      status = { name = remote.status or item.status or "" },
+      summary = remote.summary or item.summary or "",
       issuetype = { name = item.type or "" },
-      labels = item.labels or "",
+      labels = remote.labels or item.labels or "",
     },
   }
-  if item.assignee and item.assignee ~= "" and item.assignee ~= "Unassigned" then
-    issue.fields.assignee = { displayName = item.assignee }
+  local assignee = remote.assignee or item.assignee
+  if assignee and assignee ~= "" and assignee ~= "Unassigned" then
+    issue.fields.assignee = { displayName = assignee }
   end
   return parser.format_line(issue)
 end
@@ -853,7 +870,7 @@ end
 
 ---@param buf number
 ---@param uri string
-local function load_list(buf, uri)
+local function load_list(buf, uri, after_save)
   local spec, err = M.parse_uri(uri)
   if not spec then
     vim.notify(err or ("Invalid URI: " .. uri), vim.log.levels.ERROR)
@@ -863,10 +880,12 @@ local function load_list(buf, uri)
 
   M.open_seq[buf] = (M.open_seq[buf] or 0) + 1
   local seq = M.open_seq[buf]
+  local tick = after_save and vim.api.nvim_buf_get_changedtick(buf)
 
   local restore_undo
   local function is_stale_request()
     local stale = (M.open_seq[buf] ~= seq) or (not vim.api.nvim_buf_is_valid(buf))
+      or (tick and vim.api.nvim_buf_get_changedtick(buf) ~= tick)
     if stale and restore_undo then restore_undo() end
     return stale
   end
@@ -877,11 +896,11 @@ local function load_list(buf, uri)
   vim.bo[buf].swapfile = false
   vim.b[buf].jira_oil_kind = "list"
 
-  -- Disable undo while loading
-  restore_undo = util.suspend_undo(buf)
-
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Loading " .. spec.view_label .. "..." })
-  vim.bo[buf].modified = false
+  if not after_save then
+    restore_undo = util.suspend_undo(buf)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Loading " .. spec.view_label .. "..." })
+    vim.bo[buf].modified = false
+  end
 
   --- Build buffer lines and parallel metadata from a list of issues.
   ---@param issues table[]
@@ -898,6 +917,13 @@ local function load_list(buf, uri)
       if parsed then
         parsed.key = issue.key or ""
         parsed.section = section
+        local fields = issue.fields or {}
+        parsed.remote = {
+          status = fields.status and fields.status.name,
+          assignee = fields.assignee and (fields.assignee.displayName or fields.assignee.name) or "Unassigned",
+          summary = fields.summary,
+          labels = fields.labels and util.labels_to_string(fields.labels),
+        }
         table.insert(structured, parsed)
       end
     end
@@ -919,9 +945,11 @@ local function load_list(buf, uri)
 
     vim.bo[buf].modifiable = true
     vim.bo[buf].omnifunc = "v:lua.require('jira-oil.completion').omnifunc"
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-    vim.bo[buf].modified = false
-    restore_undo()
+    util.without_undo(buf, function()
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+      vim.bo[buf].modified = false
+    end)
+    if restore_undo then restore_undo() end
 
     apply_decorations(buf, lines, issue_keys, sprint_count, backlog_count, target, nil)
     actions.setup(buf)
@@ -1007,7 +1035,7 @@ function M.refresh(buf, opts)
     return false
   end
   cli.clear_cache("all")
-  return load_list(buf, data.uri)
+  return load_list(buf, data.uri, opts and opts.after_save)
 end
 
 ---@param buf number
@@ -1023,7 +1051,7 @@ function M.reset(buf, opts)
     end
     local scratch = require("jira-oil.scratch")
     for key in pairs(list_keys(buf)) do
-      scratch.clear_draft(key)
+      scratch.discard_draft(key)
     end
   end
 
@@ -1041,6 +1069,10 @@ function M.reset(buf, opts)
     local line = format_structured_item(item)
     table.insert(lines, line)
     issue_keys[#lines] = item.key or nil
+    local parsed = parser.parse_line(line)
+    for _, field in ipairs({ "status", "assignee", "summary", "type", "labels" }) do
+      item[field] = parsed and parsed[field]
+    end
   end
 
   if data.target == "all" then
