@@ -838,11 +838,17 @@ function M.confirm_discard(buf, action)
   if not M.has_pending_changes(buf) then
     return true
   end
-  return vim.fn.confirm(
+  local ok, choice = pcall(
+    vim.fn.confirm,
     "This Jira list has unsaved edits, drafts, or queued removals.\n" .. action .. "?",
-    "&Cancel\n&Continue",
+    "&Cancel\n&Proceed",
     1
-  ) == 2
+  )
+  -- Neovim raises a Lua error when Ctrl-C interrupts confirm().
+  if not ok and choice ~= "Keyboard interrupt" then
+    error(choice, 0)
+  end
+  return ok and choice == 2
 end
 
 ---@param buf number
