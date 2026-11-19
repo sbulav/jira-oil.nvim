@@ -119,33 +119,34 @@ function M.compute_diff(buf)
       if orig then
         local draft = scratch.peek_draft(item.key)
         local draft_parsed = draft and draft.parsed or nil
+        local draft_diff = (draft and draft.diff) or {}
 
         local eff_status = item.status
         local eff_assignee = item.assignee
         local eff_summary = item.summary
-        local eff_labels = item.labels or ""
+        local orig_labels = orig.labels or ""
+        local eff_labels = util.labels_to_string(item.labels or orig_labels)
         local eff_description = orig.description or ""
-        -- List rows carry no description, so only the draft's own diff can
-        -- say whether the description was edited.
-        local description_changed = false
+        local epic
 
         if draft_parsed then
-          if draft_parsed.fields and draft_parsed.fields.status and draft_parsed.fields.status ~= "" then
+          if draft_diff.status_changed then
             eff_status = draft_parsed.fields.status
           end
-          if draft_parsed.fields and draft_parsed.fields.assignee and draft_parsed.fields.assignee ~= "" then
+          if draft_diff.assignee_changed then
             eff_assignee = draft_parsed.fields.assignee
           end
-          if draft_parsed.summary and draft_parsed.summary ~= "" then
+          if draft_diff.summary_changed and draft_parsed.summary ~= "" then
             eff_summary = draft_parsed.summary
           end
-          if draft_parsed.fields and draft_parsed.fields.labels then
-            eff_labels = util.labels_to_string(draft_parsed.fields.labels)
+          if draft_diff.labels_changed then
+            orig_labels = draft_diff.orig_labels
+            eff_labels = draft_diff.new_labels
           end
-          if draft.diff and draft.diff.description_changed then
+          if draft_diff.description_changed then
             eff_description = draft_parsed.description or ""
-            description_changed = true
           end
+          if draft_diff.epic_changed then epic = draft_parsed.fields.epic end
         end
 
         local updates = {}
@@ -154,7 +155,7 @@ function M.compute_diff(buf)
           table.insert(mutations, { type = "MOVE", key = item.key, dest = dest })
         end
 
-        if draft and draft.diff and draft.diff.queued_for_removal then
+        if draft_diff.queued_for_removal then
           eff_status = config.options.defaults.close_status
           table.insert(updates, "Close issue " .. item.key .. ": " .. orig.status .. " -> " .. eff_status)
         elseif eff_status ~= orig.status then
@@ -162,10 +163,16 @@ function M.compute_diff(buf)
         end
         if eff_assignee ~= orig.assignee then table.insert(updates, "assignee: " .. orig.assignee .. " -> " .. eff_assignee) end
         if eff_summary ~= orig.summary then table.insert(updates, "summary: " .. orig.summary .. " -> " .. eff_summary) end
-        if eff_labels ~= (orig.labels or "") then table.insert(updates, "labels: " .. (orig.labels or "") .. " -> " .. eff_labels) end
-        if description_changed then table.insert(updates, "description: [changed]") end
-        local custom_updates = draft and draft.diff and draft.diff.custom_field_updates or {}
-        local custom_errors = draft and draft.diff and draft.diff.custom_field_errors or {}
+        local labels_changed = eff_labels ~= orig_labels
+        if labels_changed then table.insert(updates, "labels: " .. orig_labels .. " -> " .. eff_labels) end
+        if draft_diff.description_changed then table.insert(updates, "description: [changed]") end
+        if epic ~= nil then
+          local from = draft_diff.orig_epic_key ~= "" and draft_diff.orig_epic_key or "(none)"
+          local to = draft_diff.new_epic_key ~= "" and draft_diff.new_epic_key or "(none)"
+          table.insert(updates, "epic: " .. from .. " -> " .. to)
+        end
+        local custom_updates = draft_diff.custom_field_updates or {}
+        local custom_errors = draft_diff.custom_field_errors or {}
         if #custom_updates > 0 or #custom_errors > 0 then table.insert(updates, "custom fields: [changed]") end
         if #updates > 0 then
           local effective_item = vim.deepcopy(item)
@@ -173,64 +180,12 @@ function M.compute_diff(buf)
           effective_item.assignee = eff_assignee
           effective_item.summary = eff_summary
           effective_item.labels = eff_labels
+          effective_item.previous_labels = labels_changed and orig_labels or nil
           effective_item.description = eff_description
+          effective_item.epic = epic
           effective_item.custom_field_updates = vim.deepcopy(custom_updates)
           effective_item.custom_field_errors = vim.deepcopy(custom_errors)
           table.insert(mutations, { type = "UPDATE", key = item.key, updates = updates, item = effective_item })
-        end
-      end
-    end
-  end
-
-  -- Include scratch-only drafts even if the issue is untouched in the list view.
-  for _, key in ipairs(scratch.get_draft_keys()) do
-    local draft = scratch.peek_draft(key)
-    if current_by_key[key] and original_by_key[key] then
-      local already = false
-      for _, m in ipairs(mutations) do
-        if m.type == "UPDATE" and m.key == key then
-          already = true
-          break
-        end
-      end
-      if not already then
-        local orig = original_by_key[key]
-        local parsed = draft and draft.parsed or nil
-        if parsed then
-          local updates = {}
-          local eff_status = parsed.fields and parsed.fields.status or orig.status
-          local eff_assignee = parsed.fields and parsed.fields.assignee or orig.assignee
-          local eff_summary = parsed.summary ~= "" and parsed.summary or orig.summary
-          local eff_labels = parsed.fields and parsed.fields.labels and util.labels_to_string(parsed.fields.labels) or (orig.labels or "")
-          local eff_description = parsed.description or ""
-
-          if draft and draft.diff and draft.diff.queued_for_removal then
-            eff_status = config.options.defaults.close_status
-            table.insert(updates, "Close issue " .. key .. ": " .. orig.status .. " -> " .. eff_status)
-          elseif eff_status ~= orig.status then
-            table.insert(updates, "status: " .. orig.status .. " -> " .. eff_status)
-          end
-          if eff_assignee ~= orig.assignee then table.insert(updates, "assignee: " .. orig.assignee .. " -> " .. eff_assignee) end
-          if eff_summary ~= orig.summary then table.insert(updates, "summary: " .. orig.summary .. " -> " .. eff_summary) end
-          if eff_labels ~= (orig.labels or "") then table.insert(updates, "labels: " .. (orig.labels or "") .. " -> " .. eff_labels) end
-          if draft.diff and draft.diff.description_changed then table.insert(updates, "description: [changed]") end
-          local custom_updates = draft.diff and draft.diff.custom_field_updates or {}
-          local custom_errors = draft.diff and draft.diff.custom_field_errors or {}
-          if #custom_updates > 0 or #custom_errors > 0 then table.insert(updates, "custom fields: [changed]") end
-
-          if #updates > 0 then
-            local item = {
-              key = key,
-              status = eff_status,
-              assignee = eff_assignee,
-              summary = eff_summary,
-              labels = eff_labels,
-              description = eff_description,
-              custom_field_updates = vim.deepcopy(custom_updates),
-              custom_field_errors = vim.deepcopy(custom_errors),
-            }
-            table.insert(mutations, { type = "UPDATE", key = key, updates = updates, item = item })
-          end
         end
       end
     end
@@ -407,7 +362,9 @@ function M.execute_mutations(buf, mutations)
         orig.status = m.item.status
         orig.assignee = m.item.assignee
         orig.summary = m.item.summary
-        orig.labels = m.item.labels
+        if m.item.previous_labels ~= nil then
+          orig.labels = m.item.labels
+        end
       end
     elseif m.type == "MOVE" and m.dest == "SPRINT" then
       local orig = original_by_key[m.key]
@@ -587,17 +544,15 @@ function M.execute_mutations(buf, mutations)
         local description_changed = false
         local assignee_changed = false
         local status_changed = false
-        local labels_changed = false
         local custom_updates = m.item.custom_field_updates or {}
         for _, update in ipairs(m.updates) do
           if update:match("^summary:") then summary_changed = true end
           if update:match("^description:") then description_changed = true end
           if update:match("^assignee:") then assignee_changed = true end
           if update:match("^status:") or update:match("^Close issue ") then status_changed = true end
-          if update:match("^labels:") then labels_changed = true end
         end
 
-        -- Build sequential chain: summary/description -> assignee -> labels -> status
+        -- Build sequential chain: summary/description -> assignee -> epic -> labels -> status
         -- Short-circuit on error to avoid inconsistent state
         local function do_status(skip_on_error)
           if skip_on_error then
@@ -621,13 +576,12 @@ function M.execute_mutations(buf, mutations)
         end
 
         local function do_labels(skip_on_error)
-          if skip_on_error or not labels_changed then
+          if skip_on_error or m.item.previous_labels == nil then
             do_status(skip_on_error)
             return
           end
 
-          local orig_item = original_by_key[m.key]
-          local orig_labels_set = util.labels_to_set(orig_item and orig_item.labels or nil)
+          local orig_labels_set = util.labels_to_set(m.item.previous_labels)
           local new_labels_list = util.labels_to_list(m.item.labels)
           local new_labels_set = util.labels_to_set(new_labels_list)
 
@@ -660,9 +614,20 @@ function M.execute_mutations(buf, mutations)
           end)
         end
 
+        local function do_epic(skip_on_error)
+          if skip_on_error or m.item.epic == nil then
+            do_labels(skip_on_error)
+            return
+          end
+          cli.set_issue_epic(m.key, util.extract_epic_key(m.item.epic), function(ok)
+            if ok then scratch.commit_epic(m.key, m.item.epic) end
+            do_labels(not ok)
+          end)
+        end
+
         local function do_assign(skip_on_error)
           if skip_on_error or not assignee_changed then
-            do_labels(skip_on_error)
+            do_epic(skip_on_error)
             return
           end
 
@@ -676,9 +641,9 @@ function M.execute_mutations(buf, mutations)
             cli.exec(cmd, function(_, stderr, code)
               if code ~= 0 then
                 vim.notify("Failed to update assignee " .. m.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-                do_labels(true)
+                do_epic(true)
               else
-                do_labels(false)
+                do_epic(false)
               end
             end)
           end

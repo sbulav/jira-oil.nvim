@@ -448,6 +448,22 @@ function M.get_issue(key, callback)
   end)
 end
 
+---Assign or clear an issue's epic.
+---@param key string
+---@param epic_key string Empty to remove the issue from its epic.
+---@param callback fun(ok: boolean)
+function M.set_issue_epic(key, epic_key, callback)
+  local args = epic_key == "" and { "epic", "remove", key } or { "epic", "add", epic_key, key }
+  M.exec(args, function(_, stderr, code)
+    if code ~= 0 then
+      vim.notify("Failed to update epic for " .. key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
+    else
+      M.clear_cache("issue:" .. key)
+    end
+    callback(code == 0)
+  end)
+end
+
 ---Fetch epics list for selection
 ---@param callback function(epics)
 function M.get_epics(callback)

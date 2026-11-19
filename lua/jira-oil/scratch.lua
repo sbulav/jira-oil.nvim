@@ -154,11 +154,12 @@ local function apply_row_overrides(issue, row)
 end
 
 ---@param issue table
----@param parsed table|nil
-local function apply_parsed_overrides(issue, parsed)
-  if not parsed then
+---@param draft table|nil
+local function apply_parsed_overrides(issue, draft)
+  if not (draft and draft.parsed) then
     return
   end
+  local parsed, diff = draft.parsed, draft.diff
   issue.fields = issue.fields or {}
 
   if parsed.summary and parsed.summary ~= "" then
@@ -198,7 +199,9 @@ local function apply_parsed_overrides(issue, parsed)
       issue.fields.components = list
     end
 
-    issue.fields.labels = util.labels_to_list(parsed.fields.labels)
+    if diff.labels_changed then
+      issue.fields.labels = util.labels_to_list(parsed.fields.labels)
+    end
   end
 
   issue.fields.description = parsed.description or ""
@@ -335,14 +338,17 @@ local function description_lines(desc)
   return { "" }
 end
 
----@param original table|nil diff baseline; defaults to `issue`
-local function render_issue(buf, key, issue, is_new, original, custom_text, custom_defs)
+local function render_issue(buf, key, issue, is_new, opts)
   if not vim.api.nvim_buf_is_valid(buf) then return end
-  original = original or issue
+  opts = opts or {}
+  local original = opts.original or issue
+  local draft = opts.draft
+  local parsed = draft and draft.parsed
+  local custom_text = parsed and parsed.custom_fields
 
   local itype = issue.fields and (issue.fields.issuetype or issue.fields.issueType)
-  local epic = util.resolve_epic_from_fields(issue.fields)
-  local epic_key = extract_epic_key(epic)
+  local original_epic = opts.original_epic or util.resolve_epic_from_fields(original.fields)
+  local epic = parsed and draft.diff.epic_changed and parsed.fields.epic or original_epic
 
   local components = ""
   if issue.fields and issue.fields.components and type(issue.fields.components) == "table" then
@@ -379,7 +385,7 @@ local function render_issue(buf, key, issue, is_new, original, custom_text, cust
 
   local desc_lines = description_lines(issue.fields and issue.fields.description)
 
-  local definitions = vim.deepcopy(custom_defs or config.options.custom_fields)
+  local definitions = vim.deepcopy(parsed and parsed.custom_field_defs or config.options.custom_fields)
   local lines = { project, epic, (itype and itype.name or config.options.defaults.issue_type), components, labels, status, assignee }
   local field_rows, original_custom_fields, read_errors = {}, {}, {}
   local label_width = 12
@@ -411,7 +417,7 @@ local function render_issue(buf, key, issue, is_new, original, custom_text, cust
     original_description = normalize_description(
       table.concat(description_lines(original.fields and original.fields.description), "\n")
     ),
-    epic_key = epic_key,
+    original_epic = original_epic,
     custom_field_defs = definitions,
     original_custom_fields = original_custom_fields,
     custom_field_read_errors = read_errors,
@@ -601,10 +607,8 @@ function M.open(buf, uri)
         -- issue as fetched so restored drafts still register as changes.
         local issue = vim.deepcopy(fetched)
         apply_row_overrides(issue, pending and pending.row_fields or nil)
-        apply_parsed_overrides(issue, draft and draft.parsed or nil)
-        render_issue(buf, key, issue, false, vim.deepcopy(fetched),
-          draft and draft.parsed and draft.parsed.custom_fields,
-          draft and draft.parsed and draft.parsed.custom_field_defs)
+        apply_parsed_overrides(issue, draft)
+        render_issue(buf, key, issue, false, { original = vim.deepcopy(fetched), draft = draft })
       else
         vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Error loading issue " .. key })
       end
@@ -759,7 +763,7 @@ local function compute_issue_diff(data, parsed)
 
   -- Epic
   local new_epic_key = extract_epic_key(parsed.fields.epic or "")
-  local orig_epic_key = data.epic_key or ""
+  local orig_epic_key = extract_epic_key(data.original_epic)
   changes.epic_changed = new_epic_key ~= orig_epic_key
   changes.new_epic_key = new_epic_key
   changes.orig_epic_key = orig_epic_key
@@ -792,6 +796,7 @@ local function compute_issue_diff(data, parsed)
   local orig_labels_str = util.labels_to_string(orig.fields and orig.fields.labels or "")
   local new_labels_str = util.labels_to_string(parsed.fields.labels or "")
   changes.labels_changed = new_labels_str ~= orig_labels_str
+  changes.orig_labels = orig_labels_str
   changes.new_labels = new_labels_str
 
   changes.custom_field_updates, changes.custom_field_errors = custom.diff(
@@ -928,7 +933,25 @@ function M.commit_custom_fields(key, updates)
   end
 end
 
----Finish a list update without discarding newer custom-field edits.
+---Record the epic that reached Jira, retaining any newer selection.
+function M.commit_epic(key, epic)
+  local draft = M.drafts[key]
+  if draft and draft.diff.epic_changed then
+    draft.diff.orig_epic_key = extract_epic_key(epic)
+    draft.diff.epic_changed = draft.diff.new_epic_key ~= draft.diff.orig_epic_key
+    if not has_any_changes(draft.diff) and not draft.diff.queued_for_removal then
+      M.clear_draft(key)
+    end
+  end
+  for buf, data in pairs(M.cache) do
+    if data.key == key and not data.is_new and vim.api.nvim_buf_is_valid(buf) then
+      data.original_epic = epic
+      M.capture_draft(buf)
+    end
+  end
+end
+
+---Finish a list update while keeping newer edits to the epic or custom fields.
 function M.complete_list_update(key, item, updates)
   local tracked = false
   for buf, data in pairs(M.cache) do
@@ -938,7 +961,9 @@ function M.complete_list_update(key, item, updates)
       fields.summary = item.summary
       fields.status = { name = item.status }
       fields.assignee = item.assignee ~= "Unassigned" and { displayName = item.assignee } or nil
-      fields.labels = util.labels_to_list(item.labels)
+      if item.previous_labels ~= nil then
+        fields.labels = util.labels_to_list(item.labels)
+      end
       for _, update in ipairs(updates) do
         if update:match("^description:") then
           fields.description = item.description
@@ -950,7 +975,8 @@ function M.complete_list_update(key, item, updates)
   end
   if not tracked then
     local draft = M.drafts[key]
-    if not draft or (#(draft.diff.custom_field_updates or {}) == 0 and #(draft.diff.custom_field_errors or {}) == 0) then
+    if not draft or (not draft.diff.epic_changed
+        and #(draft.diff.custom_field_updates or {}) == 0 and #(draft.diff.custom_field_errors or {}) == 0) then
       M.clear_draft(key)
     end
   end
@@ -1068,7 +1094,7 @@ function M.save(buf)
         return
       end
       data.key, data.is_new = created_key, false
-      data.epic_key = extract_epic_key(parsed.fields.epic or "")
+      data.original_epic = parsed.fields.epic
       data.original = data.original or { fields = {} }
       data.original.fields = data.original.fields or {}
       local fields = data.original.fields
@@ -1211,37 +1237,15 @@ function M.save(buf)
 
     -- Step 4: Epic change (only if changed)
     if diff.epic_changed then
-      -- If there was an old epic, remove it first, then add new one
-      if diff.orig_epic_key ~= "" then
-        table.insert(steps, {
-          desc = "remove old epic",
-          fn = function(next_cb)
-            cli.exec({ "epic", "remove", data.key }, function(_, stderr, code)
-              if code ~= 0 then
-                vim.notify("Failed to remove epic from " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-                next_cb(true)
-              else
-                next_cb(false)
-              end
-            end)
-          end,
-        })
-      end
-      if diff.new_epic_key ~= "" then
-        table.insert(steps, {
-          desc = "add new epic",
-          fn = function(next_cb)
-            cli.exec({ "epic", "add", diff.new_epic_key, data.key }, function(_, stderr, code)
-              if code ~= 0 then
-                vim.notify("Failed to add epic to " .. data.key .. ": " .. (stderr or ""), vim.log.levels.ERROR)
-                next_cb(true)
-              else
-                next_cb(false)
-              end
-            end)
-          end,
-        })
-      end
+      table.insert(steps, {
+        desc = "update epic",
+        fn = function(next_cb)
+          cli.set_issue_epic(data.key, diff.new_epic_key, function(ok)
+            if ok then M.commit_epic(data.key, parsed.fields.epic) end
+            next_cb(not ok)
+          end)
+        end,
+      })
     end
 
     -- Step 5: Components change (only if changed)
@@ -1369,9 +1373,6 @@ function M.save(buf)
         if diff.status_changed then
           orig.fields.status = { name = diff.new_status }
         end
-        if diff.epic_changed then
-          data.epic_key = diff.new_epic_key
-        end
         if diff.components_changed then
           local comps = {}
           for comp in string.gmatch(diff.new_components, "[^,]+") do
@@ -1416,7 +1417,7 @@ function M.reset(buf)
     vim.notify("Find the created issue key in Jira and reopen it before resetting.", vim.log.levels.ERROR)
     return
   end
-  render_issue(buf, data.key, issue, data.is_new)
+  render_issue(buf, data.key, issue, data.is_new, { original_epic = data.original_epic })
 end
 
 function M.pick_epic(buf)
